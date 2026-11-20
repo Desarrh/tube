@@ -39,6 +39,30 @@ pub fn cookies_path() -> PathBuf {
     dir().join("cookies.txt")
 }
 
+/// Échéance (secondes Unix) des adresses d'une extraction : paramètre `expire=` de googlevideo.
+pub fn extract_expiry(info: &serde_json::Value) -> Option<u64> {
+    let u = info["formats"].as_array()?.iter().find_map(|f| f["url"].as_str())?;
+    let i = u.find("expire=")? + 7;
+    u[i..].split(['&', '/']).next()?.parse().ok()
+}
+
+/// Extractions récentes gardées sur disque (`extraits.json`) : une vidéo déjà préparée démarre
+/// sans nouvelle extraction, même après un redémarrage (adresses valables ~6 h).
+pub fn load_extracts() -> Vec<(String, serde_json::Value)> {
+    let Ok(b) = std::fs::read(dir().join("extraits.json")) else { return Vec::new() };
+    let v: Vec<(String, serde_json::Value)> = serde_json::from_slice(&b).unwrap_or_default();
+    // encore valables au moins 30 min
+    v.into_iter().filter(|(_, i)| extract_expiry(i).is_some_and(|e| e > now() + 1800)).collect()
+}
+
+pub fn save_extracts(v: Vec<(String, serde_json::Value)>) {
+    std::thread::spawn(move || {
+        if let Ok(b) = serde_json::to_vec(&v) {
+            let _ = socle::paths::write_atomic(&dir().join("extraits.json"), &b);
+        }
+    });
+}
+
 pub fn now() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
 }

@@ -12,7 +12,10 @@ COOKIES = os.environ.get("TUBE_COOKIES", "")
 def make(auth):
     o = {"quiet": True, "no_warnings": True, "skip_download": True, "noplaylist": True, "noprogress": True,
          # pas de flux du début pour les directs : seulement le bord du direct
-         "live_from_start": False}
+         "live_from_start": False,
+         # pas de manifeste HLS pour les vidéos (Tube lit les flux https) : ~1,7 s de gagnées par
+         # extraction. Les directs passent par l'instance « mweb », qui le garde.
+         "extractor_args": {"youtube": {"skip": ["hls"]}}}
     if auth and COOKIES and os.path.isfile(COOKIES):
         o["cookiefile"] = COOKIES
     return yt_dlp.YoutubeDL(o)

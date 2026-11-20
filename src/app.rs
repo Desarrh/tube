@@ -486,7 +486,8 @@ pub fn pick(info: &Value, cap: u32, lang: Option<&str>) -> (Option<Fmt>, Option<
 
 impl App {
     pub fn new(ctx: &egui::Context, s: Settings, hwnd: isize, wake_hk: impl Fn(crate::hotkeys::Hk) + Send + Sync + 'static) -> App {
-        socle::theme::install_fonts(ctx);
+        // gras (titres des cartes) et emoji (fréquents dans les titres YouTube : sans eux, des carrés vides)
+        socle::theme::install_fonts_with(ctx, socle::theme::FontOptions { bold: true, emoji: true, symbols: true });
         let pal = socle::theme::palette(s.dark);
         socle::theme::apply(ctx, &pal);
         let jar = Arc::new(Mutex::new(Jar::load(&crate::store::cookies_path())));
@@ -784,6 +785,7 @@ impl App {
     /// Onglets de la session précédente (sans relancer de lecture).
     pub fn restore_tabs(&mut self) {
         self.ac = socle::autocomplete::Autocomplete::new(self.s.search_history.clone());
+        self.load_disk_cache();
         let saved = std::mem::take(&mut self.s.tabs);
         let tabs: Vec<Tab> = saved
             .into_iter()
@@ -803,6 +805,24 @@ impl App {
         }
         let v = self.view.clone();
         self.ensure_feed(&v);
+    }
+
+    /// Extractions encore valables enregistrées au lancement précédent : remises dans le cache
+    /// (avec leur âge réel), donc pas de nouvelle extraction pour ces vidéos.
+    pub fn load_disk_cache(&mut self) {
+        let now = crate::store::now();
+        for (id, info) in crate::store::load_extracts() {
+            let left = crate::store::extract_expiry(&info).unwrap_or(now).saturating_sub(now + 1800).min(3 * 3600);
+            let born = Instant::now().checked_sub(Duration::from_secs(3 * 3600 - left)).unwrap_or_else(Instant::now);
+            self.cache.entry(id).or_insert((info, born));
+        }
+    }
+
+    /// Enregistre les 40 extractions les plus récentes (fil séparé, écriture atomique).
+    fn save_disk_cache(&self) {
+        let mut v: Vec<(&String, &(Value, Instant))> = self.cache.iter().filter(|c| c.1.1.elapsed() < Duration::from_secs(3 * 3600)).collect();
+        v.sort_by_key(|c| c.1.1.elapsed());
+        crate::store::save_extracts(v.into_iter().take(40).map(|(id, (info, _))| (id.clone(), info.clone())).collect());
     }
 
     /// Copie les onglets (et l'historique de recherche) dans les réglages (sauvegardés avec eux).
@@ -2106,7 +2126,8 @@ impl App {
                 let playing_this = self.watch.as_ref().is_some_and(|w| w.item.id == id && w.player.is_none());
                 match r {
                     Ok(v) => {
-                        self.cache.insert(id, (v.clone(), Instant::now()));
+                        self.cache.insert(id.clone(), (v.clone(), Instant::now()));
+                        self.save_disk_cache();
                         if playing_this {
                             self.start(v);
                         }
