@@ -1,0 +1,9 @@
+/target
+/dist
+/.cargo/
+/sauvegarde-raccourcis-opera/
+*.migre
+*.log
+cookies.txt
+settings.json
+url403.txt
