@@ -56,7 +56,7 @@
 | bytemuck | 1 | Conversion des tampons de pixels |
 | dirs | 7.0.0 | `%LOCALAPPDATA%`, dossier Images |
 | winresource (build) | 0.1.34 | Icône et informations de version de l'exe |
-| **socle** | git tag **v0.1.4** (`ui`, `settings`, `crash`, `instance`, `testmode`) | `theme`, `icons`, `ui` (palette Ctrl+K, champ d'autocomplétion), `autocomplete`, `keys` (touches physiques, AZERTY), `paths`, `settings` (écriture atomique), `crash`, `instance`, `testmode`. Développement local : `.cargo/config.toml` (non versionné) pointe vers `../socle` |
+| **socle** | git tag **v0.1.5** (`ui`, `settings`, `crash`, `instance`, `testmode`) | `theme`, `icons`, `ui` (palette Ctrl+K, champ d'autocomplétion), `autocomplete`, `keys` (touches physiques, AZERTY), `paths`, `settings` (écriture atomique), `crash`, `instance`, `testmode`. Développement local : `.cargo/config.toml` (non versionné) pointe vers `../socle` |
 
 **Rendu.** L'interface est rendue par le **CPU** :
 

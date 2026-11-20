@@ -252,11 +252,19 @@ impl Settings {
         let r = if test_mode() { socle::settings::save_to(&dir().join("settings.json"), self) } else { socle::settings::save("Tube", self) };
         if let Err(e) = r {
             log(&format!("réglages non enregistrés : {e}"));
+            *SAVE_ERROR.lock().unwrap() = Some(e);
         }
     }
 }
 
 static LAST_SAVED: std::sync::Mutex<Vec<u8>> = std::sync::Mutex::new(Vec::new());
+static SAVE_ERROR: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+/// Erreur de la dernière écriture des réglages (en arrière-plan), à montrer une fois.
+pub fn take_save_error() -> Option<String> {
+    SAVE_ERROR.lock().unwrap().take()
+}
+
 static WRITER: std::sync::Mutex<Option<std::thread::JoinHandle<()>>> = std::sync::Mutex::new(None);
 
 /// Journal de diagnostic (%LOCALAPPDATA%\Tube\tube.log), limité à ~1 Mo.

@@ -2073,7 +2073,7 @@ impl App {
                 card(ui, &mut |ui| {
                     ui.label(RichText::new("Compte").strong());
                     let ok = self.login == Login::Ok;
-                    ui.label(RichText::new(if ok { "Connecté via les cookies du navigateur (stockés dans %LOCALAPPDATA%\\Tube\\cookies.txt, YouTube/Google uniquement)." } else { "Non connecté." }).color(p.muted));
+                    ui.label(RichText::new(if ok { "Connecté via les cookies du navigateur (stockés dans %LOCALAPPDATA%\\Tube\\cookies.txt, youtube.com uniquement)." } else { "Non connecté." }).color(p.muted));
                     ui.horizontal(|ui| {
                         for (name, path) in crate::cookies::browser_profiles() {
                             if ui.button(format!("Reconnecter avec {name}")).clicked() {
@@ -2142,7 +2142,8 @@ impl App {
                 });
                 card(ui, &mut |ui| {
                     ui.label(RichText::new("Outils").strong());
-                    ui.label(RichText::new(format!("yt-dlp {} · mis à jour automatiquement une fois par jour", self.ytdlp_version.clone().unwrap_or_else(|| "…".into()))).color(p.muted));
+                    ui.label(RichText::new(format!("yt-dlp {} · mis à jour automatiquement (au plus une fois par 20 h, au démarrage)", self.ytdlp_version.clone().unwrap_or_else(|| "…".into()))).color(p.muted));
+                    ui.label(RichText::new(format!("Tube {} · socle {}", env!("CARGO_PKG_VERSION"), socle::VERSION)).color(p.muted));
                     ui.horizontal(|ui| {
                         if ui.button("Mettre à jour yt-dlp maintenant").clicked() {
                             self.check_update();

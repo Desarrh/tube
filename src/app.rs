@@ -2105,6 +2105,9 @@ impl App {
             self.store_tabs();
             self.s.save_bg();
         }
+        if let Some(e) = crate::store::take_save_error() {
+            self.toast(format!("Réglages non enregistrés : {e}"));
+        }
         if let Some((_, t)) = &self.toast {
             let left = Duration::from_millis(3200).saturating_sub(t.elapsed());
             if left.is_zero() {
