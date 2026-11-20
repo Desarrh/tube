@@ -19,18 +19,28 @@ pub fn real_dir() -> PathBuf {
 pub fn dir() -> PathBuf {
     if test_mode() {
         let d = std::env::temp_dir().join("tube-test");
-        let _ = std::fs::create_dir_all(&d);
-        // copie en lecture seule des cookies (jamais réécrits chez l'utilisateur)
-        let c = d.join("cookies.txt");
-        let src = real_dir().join("cookies.txt");
-        let mt = |p: &std::path::Path| std::fs::metadata(p).and_then(|m| m.modified()).ok();
-        if !c.exists() || mt(&src) > mt(&c) {
-            let _ = std::fs::copy(&src, &c);
-        }
+        // une fois par lancement : copie des cookies youtube.com seulement (jamais réécrits chez
+        // l'utilisateur), effacée à la sortie (`clean_test`)
+        static COPY: std::sync::Once = std::sync::Once::new();
+        COPY.call_once(|| {
+            let _ = std::fs::create_dir_all(&d);
+            if let Ok(t) = std::fs::read_to_string(real_dir().join("cookies.txt")) {
+                let youtube = |l: &&str| l.trim_start_matches("#HttpOnly_").split('\t').next().is_some_and(|d| d.ends_with("youtube.com"));
+                let keep: String = t.lines().filter(youtube).map(|l| format!("{l}\n")).collect();
+                let _ = std::fs::write(d.join("cookies.txt"), keep);
+            }
+        });
         return d;
     }
     real_dir()
 }
+/// Fin du mode test : la copie des cookies ne reste pas dans %TEMP%.
+pub fn clean_test() {
+    if test_mode() {
+        let _ = std::fs::remove_file(dir().join("cookies.txt"));
+    }
+}
+
 /// Outils (venv yt-dlp, deno) : partagés, utilisés en lecture seule par le mode test.
 pub fn bin_dir() -> PathBuf {
     real_dir().join("bin")
@@ -52,12 +62,22 @@ pub fn load_extracts() -> Vec<(String, serde_json::Value)> {
     let Ok(b) = std::fs::read(dir().join("extraits.json")) else { return Vec::new() };
     let v: Vec<(String, serde_json::Value)> = serde_json::from_slice(&b).unwrap_or_default();
     // encore valables au moins 30 min
-    v.into_iter().filter(|(_, i)| extract_expiry(i).is_some_and(|e| e > now() + 1800)).collect()
+    let v: Vec<_> = v.into_iter().filter(|(_, i)| extract_expiry(i).is_some_and(|e| e > now() + 1800)).collect();
+    *EXTRACTS.lock().unwrap() = v.clone();
+    v
 }
 
-pub fn save_extracts(v: Vec<(String, serde_json::Value)>) {
+/// Copie disque des 40 extractions les plus récentes, tenue ici (pas de re-clonage du cache).
+static EXTRACTS: std::sync::Mutex<Vec<(String, serde_json::Value)>> = std::sync::Mutex::new(Vec::new());
+
+/// Ajoute une extraction à `extraits.json` (fil séparé, entrées expirées retirées).
+pub fn add_extract(id: String, info: serde_json::Value) {
     std::thread::spawn(move || {
-        if let Ok(b) = serde_json::to_vec(&v) {
+        let mut l = EXTRACTS.lock().unwrap();
+        l.retain(|(i, x)| *i != id && extract_expiry(x).is_some_and(|e| e > now() + 1800));
+        l.insert(0, (id, info));
+        l.truncate(40);
+        if let Ok(b) = serde_json::to_vec(&*l) {
             let _ = socle::paths::write_atomic(&dir().join("extraits.json"), &b);
         }
     });
@@ -189,7 +209,27 @@ impl Settings {
         }
         socle::settings::load("Tube")
     }
+    /// Enregistrement périodique : seulement si quelque chose a changé, écriture dans un fil.
+    pub fn save_bg(&mut self) {
+        self.trim();
+        let Ok(b) = serde_json::to_vec(&*self) else { return };
+        let mut last = LAST_SAVED.lock().unwrap();
+        if *last == b {
+            return;
+        }
+        *last = b;
+        let s = self.clone();
+        std::thread::spawn(move || s.write());
+    }
+    /// Enregistrement immédiat (fermeture, réglage explicite).
     pub fn save(&mut self) {
+        self.trim();
+        if let Ok(b) = serde_json::to_vec(&*self) {
+            *LAST_SAVED.lock().unwrap() = b;
+        }
+        self.write();
+    }
+    fn trim(&mut self) {
         // ne garder que les 2000 reprises les plus récentes
         if self.positions.len() > 2000 {
             let mut v: Vec<(String, u64)> = self.positions.iter().map(|(k, p)| (k.clone(), p.2)).collect();
@@ -198,6 +238,8 @@ impl Settings {
                 self.positions.remove(&k);
             }
         }
+    }
+    fn write(&self) {
         // écriture atomique (socle)
         let r = if test_mode() { socle::settings::save_to(&dir().join("settings.json"), self) } else { socle::settings::save("Tube", self) };
         if let Err(e) = r {
@@ -205,6 +247,8 @@ impl Settings {
         }
     }
 }
+
+static LAST_SAVED: std::sync::Mutex<Vec<u8>> = std::sync::Mutex::new(Vec::new());
 
 /// Journal de diagnostic (%LOCALAPPDATA%\Tube\tube.log), limité à ~1 Mo.
 pub fn log(msg: &str) {

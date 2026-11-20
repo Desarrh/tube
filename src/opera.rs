@@ -175,29 +175,3 @@ fn patch_run(backup: &Path, stamp: u64) -> std::result::Result<String, String> {
     }
     Ok(format!("lancement automatique « {name} » : drapeau ajouté (avant : [{value}])"))
 }
-
-/// Liste des vrais dossiers de données (diagnostic MSIX) : chemins, tailles, dates.
-pub fn diag() -> String {
-    let mut s = String::new();
-    for d in [socle::paths::config_dir("Tube"), socle::paths::cache_dir("Tube")] {
-        s.push_str(&format!("== {}\n", d.display()));
-        if let Ok(rd) = std::fs::read_dir(&d) {
-            for e in rd.flatten() {
-                let m = e.metadata().ok();
-                let t = m.as_ref().and_then(|m| m.modified().ok()).and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_secs()).unwrap_or(0);
-                s.push_str(&format!("{:>10} {} {}\n", m.map(|m| m.len()).unwrap_or(0), t, e.file_name().to_string_lossy()));
-            }
-        }
-    }
-    // contenu des réglages (le conteneur MSIX d'un outil en montrerait une autre copie)
-    if let Ok(t) = std::fs::read_to_string(socle::paths::config_dir("Tube").join("settings.json")) {
-        s.push_str(&format!("== settings.json\n{t}\n"));
-    }
-    s.push_str("== clé Run\n");
-    for (n, v) in read_run().unwrap_or_default() {
-        if v.to_ascii_lowercase().contains("opera") {
-            s.push_str(&format!("{n} = {v}\n"));
-        }
-    }
-    s
-}

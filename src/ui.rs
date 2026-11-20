@@ -488,7 +488,7 @@ impl App {
                     go = true;
                 }
                 ui.label(RichText::new("coupe le réseau d'Opera ~1 s").size(11.5).color(p.muted));
-                if ui.button("Réappliquer le réglage d'Opera").on_hover_text("Après une mise à jour d'Opera : remet le drapeau qui laisse Tube relire ses cookies sans le couper (effet au prochain démarrage d'Opera)").clicked() {
+                if ui.button("Réappliquer le réglage d'Opera").on_hover_text("Ajoute à Opera GX le drapeau --disable-features=LockProfileCookieDatabase : il réduit le verrou de protection de ses cookies, que Tube peut alors relire sans le couper. Raccourcis et lancement automatique sauvegardés avant ; effet au prochain démarrage d'Opera. Utile après une mise à jour d'Opera.").clicked() {
                     self.opera_flag();
                 }
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -1302,6 +1302,9 @@ impl App {
             if self.viz.is_none() && !self.viz_failed && playing {
                 self.viz = crate::viz::Viz::start();
                 self.viz_failed = self.viz.is_none();
+            } else if !playing {
+                // en pause : capture du son arrêtée (relancée à la reprise)
+                self.viz = None;
             }
             let bands = ((video.width() / 14.0) as usize).clamp(24, 96);
             let target = match &self.viz {
@@ -1929,11 +1932,13 @@ impl App {
         if moved {
             self.overlay_until = Instant::now() + Duration::from_millis(if mini { 1500 } else { 2500 });
         }
-        let show = (inside && (mini || Instant::now() < self.overlay_until)) || self.menu.is_some() || self.watch.as_ref().is_some_and(|w| w.player.as_ref().is_none_or(|p| !p.wants_play()));
+        let paused = self.watch.as_ref().is_some_and(|w| w.player.as_ref().is_none_or(|p| !p.wants_play()));
+        let show = (inside && (mini || Instant::now() < self.overlay_until)) || self.menu.is_some() || paused;
         if !show && !mini {
             ui.ctx().set_cursor_icon(CursorIcon::None);
         }
-        if show {
+        // en pause, rien ne bouge : redessin seulement pendant le fondu des commandes
+        if show && (!paused || Instant::now() < self.overlay_until) {
             ui.ctx().request_repaint_after(self.overlay_until.saturating_duration_since(Instant::now()).max(Duration::from_millis(250)).min(Duration::from_millis(500)));
         }
         // mode cinéma (plein écran / demi-écran) : la vidéo occupe sa place exacte et les bandes

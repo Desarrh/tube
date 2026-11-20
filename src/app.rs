@@ -490,6 +490,14 @@ impl App {
         socle::theme::install_fonts_with(ctx, socle::theme::FontOptions { bold: true, emoji: true, symbols: true });
         let pal = socle::theme::palette(s.dark);
         socle::theme::apply(ctx, &pal);
+        // dossiers d'import laissés par un arrêt brutal (copies brutes des cookies du navigateur)
+        std::thread::spawn(|| {
+            for e in std::fs::read_dir(crate::store::dir()).into_iter().flatten().flatten() {
+                if e.file_name().to_string_lossy().starts_with("import") && e.path().is_dir() {
+                    let _ = std::fs::remove_dir_all(e.path());
+                }
+            }
+        });
         let jar = Arc::new(Mutex::new(Jar::load(&crate::store::cookies_path())));
         let logged = jar.lock().unwrap().logged_in();
         let api = Arc::new(Api::new(jar));
@@ -635,10 +643,21 @@ impl App {
     pub fn opera_flag(&mut self) {
         let dev = std::env::current_exe().ok().and_then(|e| e.parent()?.parent().map(|p| p.to_path_buf())).filter(|p| p.join("Cargo.toml").exists());
         let backup = dev.unwrap_or_else(crate::store::real_dir).join("sauvegarde-raccourcis-opera");
-        let r = crate::opera::apply(&backup);
-        let added = r.iter().filter(|l| l.contains("ajouté")).count();
-        let err = r.iter().any(|l| l.contains("erreur") || l.starts_with("clé Run"));
-        self.toast(if err { "Opera : une modification a échoué (voir tube.log)".to_string() } else if added > 0 { format!("Opera : drapeau ajouté à {added} lancement(s), effet au prochain démarrage d'Opera") } else { "Opera : réglage déjà en place".into() });
+        let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
+        // raccourcis et registre : dans un fil (accès disque et COM)
+        std::thread::spawn(move || {
+            let r = crate::opera::apply(&backup);
+            let added = r.iter().filter(|l| l.contains("ajouté")).count();
+            let err = r.iter().any(|l| l.contains("erreur") || l.starts_with("clé Run"));
+            let _ = tx.send(Msg::Toast(if err {
+                "Opera : une modification a échoué (voir tube.log)".to_string()
+            } else if added > 0 {
+                format!("Opera : verrou des cookies réduit sur {added} lancement(s), effet au prochain démarrage d'Opera")
+            } else {
+                "Opera : réglage déjà en place".into()
+            }));
+            ctx.request_repaint();
+        });
     }
 
     pub fn toast(&mut self, t: impl Into<String>) {
@@ -649,6 +668,13 @@ impl App {
     /// Import des cookies. `allow_kill` : seulement sur action de l'utilisateur (bouton) ; sinon
     /// copie silencieuse, possible uniquement si le fichier du navigateur n'est pas verrouillé.
     pub fn import_cookies(&mut self, profile: std::path::PathBuf, allow_kill: bool) {
+        use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+        static BUSY: AtomicBool = AtomicBool::new(false);
+        static N: AtomicU32 = AtomicU32::new(0);
+        // un seul import à la fois (bouton cliqué deux fois, réimport auto en même temps…)
+        if BUSY.swap(true, Ordering::SeqCst) {
+            return;
+        }
         crate::store::log(&format!("import des cookies depuis {}{}", profile.display(), if allow_kill { "" } else { " (sans rien arrêter)" }));
         if self.login != Login::Ok {
             self.login = Login::Importing;
@@ -657,15 +683,19 @@ impl App {
         let tx = self.tx.clone();
         let ctx = self.ctx.clone();
         let worker = self.worker.clone();
+        // nom yt-dlp du navigateur (déchiffrement propre à chacun) ; Opera GX = « opera »
+        let p = profile.to_string_lossy().to_lowercase();
+        let browser = if p.contains(r"\google\chrome") { "chrome" } else if p.contains(r"\microsoft\edge") { "edge" } else { "opera" };
         std::thread::spawn(move || {
-            let tmp = crate::store::dir().join("import");
+            let tmp = crate::store::dir().join(format!("import-{}", N.fetch_add(1, Ordering::Relaxed)));
             let r = crate::cookies::copy_profile(&profile, &tmp, allow_kill).and_then(|note| {
-                let rx = worker.send(serde_json::json!({"cmd": "import", "src": tmp.to_string_lossy(), "out": crate::store::cookies_path().to_string_lossy()}));
+                let rx = worker.send(serde_json::json!({"cmd": "import", "browser": browser, "src": tmp.to_string_lossy(), "out": crate::store::cookies_path().to_string_lossy()}));
                 let res = rx.recv().map_err(|e| e.to_string()).and_then(|r| r);
                 let _ = std::fs::remove_dir_all(&tmp);
                 res.map(|v| format!("{} cookies importés{}", v["count"], if note.is_empty() { String::new() } else { format!(" ({note})") }))
             });
             let _ = std::fs::remove_dir_all(&tmp);
+            BUSY.store(false, Ordering::SeqCst);
             let _ = tx.send(Msg::Cookies(r));
             ctx.request_repaint();
         });
@@ -829,12 +859,6 @@ impl App {
         }
     }
 
-    /// Enregistre les 40 extractions les plus récentes (fil séparé, écriture atomique).
-    fn save_disk_cache(&self) {
-        let mut v: Vec<(&String, &(Value, Instant))> = self.cache.iter().filter(|c| c.1.1.elapsed() < Duration::from_secs(3 * 3600)).collect();
-        v.sort_by_key(|c| c.1.1.elapsed());
-        crate::store::save_extracts(v.into_iter().take(40).map(|(id, (info, _))| (id.clone(), info.clone())).collect());
-    }
 
     /// Copie les onglets (et l'historique de recherche) dans les réglages (sauvegardés avec eux).
     pub fn store_tabs(&mut self) {
@@ -933,29 +957,6 @@ impl App {
         // commandes d'entretien (transmises à l'instance en cours par `Tube.exe --…`)
         if a == "--opera-drapeau" {
             return self.opera_flag();
-        }
-        if let Some(out) = a.strip_prefix("--diag-dossiers ") {
-            let _ = std::fs::write(out.trim().trim_matches('"'), crate::opera::diag());
-            return;
-        }
-        if let Some(f) = a.strip_prefix("--adopter-cookies ") {
-            // cookies.txt d'une autre copie de Tube : repris seulement s'il est plus récent
-            let f = std::path::Path::new(f.trim().trim_matches('"'));
-            let dst = crate::store::cookies_path();
-            let mt = |p: &std::path::Path| std::fs::metadata(p).and_then(|m| m.modified()).ok();
-            if f.exists() && !crate::store::test_mode() && (!dst.exists() || mt(f) > mt(&dst)) && std::fs::copy(f, &dst).is_ok() {
-                let _ = self.tx.send(Msg::Cookies(Ok("cookies repris".into())));
-            }
-            return;
-        }
-        if let Some(f) = a.strip_prefix("--adopter-reglages ") {
-            let f = std::path::Path::new(f.trim().trim_matches('"'));
-            if f.exists() && !crate::store::test_mode() {
-                self.s = socle::settings::load_from(f);
-                self.s.save();
-                self.toast("Réglages fusionnés repris");
-            }
-            return;
         }
         if let Some(id) = crate::ui::video_id_from(a) {
             let it = Item { kind: Kind::Video, id, ..Default::default() };
@@ -2102,7 +2103,7 @@ impl App {
         if self.last_disk_save.elapsed() > Duration::from_secs(30) {
             self.last_disk_save = Instant::now();
             self.store_tabs();
-            self.s.save();
+            self.s.save_bg();
         }
         if let Some((_, t)) = &self.toast {
             let left = Duration::from_millis(3200).saturating_sub(t.elapsed());
@@ -2164,8 +2165,10 @@ impl App {
                 let playing_this = self.watch.as_ref().is_some_and(|w| w.item.id == id && w.player.is_none());
                 match r {
                     Ok(v) => {
+                        // extractions expirées retirées au passage (adresses valables ~6 h, gardées 3 h)
+                        self.cache.retain(|_, (_, t)| t.elapsed() < Duration::from_secs(3 * 3600));
                         self.cache.insert(id.clone(), (v.clone(), Instant::now()));
-                        self.save_disk_cache();
+                        crate::store::add_extract(id.clone(), v.clone());
                         if playing_this {
                             self.start(v);
                         }
@@ -2330,5 +2333,27 @@ impl App {
 
     pub fn _quality_default(&self) -> Quality {
         self.s.quality
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::pick;
+    use serde_json::json;
+
+    #[test]
+    fn pick_prefere_vp9_et_ignore_drc_et_doublage() {
+        let info = json!({"formats": [
+            {"format_id": "400", "url": "u", "vcodec": "av01.0.12M.08", "acodec": "none", "height": 1440, "fps": 60, "tbr": 9000.0},
+            {"format_id": "271", "url": "u", "vcodec": "vp9", "acodec": "none", "height": 1440, "fps": 60, "tbr": 8000.0},
+            {"format_id": "137", "url": "u", "vcodec": "avc1.640028", "acodec": "none", "height": 1080, "fps": 30, "tbr": 4000.0},
+            {"format_id": "251-drc", "url": "u", "vcodec": "none", "acodec": "opus", "tbr": 200.0, "language": "en", "format_note": "English original (default), medium, DRC"},
+            {"format_id": "251-1", "url": "u", "vcodec": "none", "acodec": "opus", "tbr": 300.0, "language": "fr", "format_note": "French dubbed, medium"},
+            {"format_id": "251", "url": "u", "vcodec": "none", "acodec": "opus", "tbr": 130.0, "language": "en", "language_preference": 10, "format_note": "English original (default), medium"},
+            {"format_id": "140", "url": "u", "vcodec": "none", "acodec": "mp4a.40.2", "tbr": 129.0, "language": "en", "format_note": "English original (default), medium"}
+        ]});
+        let (v, a, _, _) = pick(&info, 1440, None);
+        assert_eq!(v.unwrap().id, "271");
+        assert_eq!(a.unwrap().id, "251");
     }
 }

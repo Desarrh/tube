@@ -362,6 +362,10 @@ impl Remote {
             loop {
                 let next = {
                     let st = me.st.lock().unwrap();
+                    // flux lâché par le lecteur : seuls les fils de préchargement le tiennent encore
+                    if Arc::strong_count(&me) <= st.prefetching as usize {
+                        break;
+                    }
                     let cur = st.last / CH;
                     let end = (cur + AHEAD).min((me.len.max(1) - 1) / CH + 1);
                     (cur..end).find(|c| !st.chunks.contains_key(c) && !st.inflight.contains(c))
@@ -392,11 +396,27 @@ pub struct ByteStream {
     r: Arc<Remote>,
     pos: Mutex<u64>,
     results: Arc<Mutex<HashMap<usize, u32>>>,
+    /// Fil de lecture du flux, créé à la première lecture ; il s'arrête avec le flux.
+    reader: Mutex<Option<std::sync::mpsc::Sender<Box<dyn FnOnce() + Send>>>>,
 }
 
 impl ByteStream {
     pub fn new(r: Arc<Remote>) -> IMFByteStream {
-        ByteStream { r, pos: Mutex::new(0), results: Arc::new(Mutex::new(HashMap::new())) }.into()
+        ByteStream { r, pos: Mutex::new(0), results: Arc::new(Mutex::new(HashMap::new())), reader: Mutex::new(None) }.into()
+    }
+
+    fn run(&self, job: Box<dyn FnOnce() + Send>) {
+        let mut g = self.reader.lock().unwrap();
+        let tx = g.get_or_insert_with(|| {
+            let (tx, rx) = std::sync::mpsc::channel::<Box<dyn FnOnce() + Send>>();
+            std::thread::spawn(move || {
+                for job in rx {
+                    job();
+                }
+            });
+            tx
+        });
+        let _ = tx.send(job);
     }
 }
 
@@ -440,7 +460,7 @@ impl IMFByteStream_Impl for ByteStream_Impl {
         if std::env::var_os("TUBE_LOG_READS").is_some() {
             crate::store::log(&format!("lecture {} : {pos} +{cb} (taille {})", if self.r.url.contains("mime=video") { "vidéo" } else { "son" }, self.r.len));
         }
-        // lecture dans un fil : ne bloque jamais les files de travail de Media Foundation
+        // lecture dans le fil du flux : ne bloque jamais les files de travail de Media Foundation
         let r = self.r.clone();
         let results = self.results.clone();
         let key = res.as_raw() as usize;
@@ -449,7 +469,7 @@ impl IMFByteStream_Impl for ByteStream_Impl {
         // la position avance tout de suite (lectures séquentielles de la source)
         let n_est = (cb as u64).min(self.r.total().saturating_sub(pos));
         *self.pos.lock().unwrap() = pos + n_est;
-        std::thread::spawn(move || {
+        self.run(Box::new(move || {
             // SAFETY : le tampon reste valide jusqu'à EndRead (contrat de IMFByteStream::BeginRead).
             let buf = unsafe { std::slice::from_raw_parts_mut(pb as *mut u8, cb as usize) };
             let res: IMFAsyncResult = unsafe { IMFAsyncResult::from_raw(raw as *mut _) };
@@ -476,7 +496,7 @@ impl IMFByteStream_Impl for ByteStream_Impl {
             unsafe {
                 let _ = MFInvokeCallback(&res);
             }
-        });
+        }));
         Ok(())
     }
     fn EndRead(&self, r: Ref<IMFAsyncResult>) -> Result<u32> {

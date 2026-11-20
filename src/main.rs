@@ -523,6 +523,7 @@ impl Runner {
             app.store_tabs();
             app.close_watch();
             app.s.save();
+            crate::store::clean_test();
         }
     }
 }

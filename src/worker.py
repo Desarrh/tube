@@ -103,13 +103,17 @@ def extract(url):
     }
 
 
-def import_cookies(src, out):
+def import_cookies(src, out, browser="opera"):
     from yt_dlp.cookies import extract_cookies_from_browser
-    jar = extract_cookies_from_browser("opera", profile=src)
+    if browser not in ("opera", "chrome", "edge"):
+        raise ValueError(f"navigateur non pris en charge : {browser}")
+    jar = extract_cookies_from_browser(browser, profile=src)
     keep = http.cookiejar.MozillaCookieJar(out)
     n = 0
     for c in jar:
-        if c.domain.endswith(("youtube.com", "google.com")):
+        # youtube.com seulement : il porte toute la session YouTube (SID, SAPISID, __Secure-3P*…).
+        # Les cookies google.com ouvriraient le reste du compte (Gmail, Drive…) : jamais copiés.
+        if c.domain.endswith("youtube.com"):
             keep.set_cookie(c)
             n += 1
     keep.save(ignore_discard=True, ignore_expires=True)
@@ -143,9 +147,12 @@ def handle(req):
                 res = hit[1]
             else:
                 res = extract(req["url"])
-                recent[req["url"]] = (time.time(), res)
+                now = time.time()
+                for k in [k for k, v in recent.items() if now - v[0] >= 120]:
+                    del recent[k]
+                recent[req["url"]] = (now, res)
         elif cmd == "import":
-            res = import_cookies(req["src"], req["out"])
+            res = import_cookies(req["src"], req["out"], req.get("browser", "opera"))
         elif cmd == "reload":
             GEN[0] += 1
             res = {}

@@ -191,7 +191,7 @@ fn lockup(l: &Value) -> Option<Item> {
         progress,
         live,
         short: false,
-        channel_id: channel_id(&md["metadata"]).or_if_empty(|| channel_id(&md["image"])),
+        channel_id: Some(channel_id(&md["metadata"])).filter(|c| !c.is_empty()).unwrap_or_else(|| channel_id(&md["image"])),
         not_interested: fb.0,
         no_channel: fb.1,
     })
@@ -388,7 +388,8 @@ impl Api {
     }
 
     pub fn ping(&self, base: &str, params: &[(&str, String)]) {
-        if base.is_empty() {
+        // adresse venue de la réponse de YouTube : les cookies ne partent que vers www.youtube.com
+        if !base.starts_with(&format!("{ORIGIN}/")) {
             return;
         }
         let mut url = base.to_string();
@@ -424,15 +425,6 @@ impl Api {
         }
         let s = r.body_mut().read_to_string().map_err(|e| e.to_string())?;
         serde_json::from_str(&s).map_err(|e| e.to_string())
-    }
-}
-
-trait OrIfEmpty {
-    fn or_if_empty(self, f: impl FnOnce() -> String) -> String;
-}
-impl OrIfEmpty for String {
-    fn or_if_empty(self, f: impl FnOnce() -> String) -> String {
-        if self.is_empty() { f() } else { self }
     }
 }
 

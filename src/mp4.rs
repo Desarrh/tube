@@ -20,7 +20,7 @@ fn track_id(moov: &[u8]) -> Option<u32> {
 pub fn mfra_from_head(d: &[u8]) -> Option<Vec<u8>> {
     let mut off = 0usize;
     let mut track = 1u32;
-    while off + 8 <= d.len() {
+    while off.saturating_add(8) <= d.len() {
         let mut size = be32(d, off)? as u64;
         let typ = &d[off + 4..off + 8];
         let mut hdr = 8usize;
@@ -31,20 +31,20 @@ pub fn mfra_from_head(d: &[u8]) -> Option<Vec<u8>> {
         if size < 8 {
             return None;
         }
-        let end = off + size as usize;
+        let Some(end) = usize::try_from(size).ok().and_then(|s| off.checked_add(s)) else { return None };
         match typ {
             b"moov" => track = track_id(d.get(off..end.min(d.len()))?).unwrap_or(1),
             b"sidx" => {
                 let s = d.get(off..end)?; // le sidx doit tenir entièrement dans l'en-tête lu
                 let p = hdr;
-                let v = s[p];
+                let v = *s.get(p)?;
                 let timescale = be32(s, p + 8)?;
                 let (ept, first, mut q) = if v == 0 { (be32(s, p + 12)? as u64, be32(s, p + 16)? as u64, p + 20) } else { (be64(s, p + 12)?, be64(s, p + 20)?, p + 28) };
                 q += 2; // réservé
                 let n = u16::from_be_bytes([*s.get(q)?, *s.get(q + 1)?]) as usize;
                 q += 2;
                 let _ = timescale;
-                let mut moof = end as u64 + first;
+                let mut moof = (end as u64).checked_add(first)?;
                 let mut t = ept;
                 let mut entries = Vec::with_capacity(n);
                 for i in 0..n {
@@ -54,8 +54,8 @@ pub fn mfra_from_head(d: &[u8]) -> Option<Vec<u8>> {
                         return None; // référence vers un autre sidx : non géré
                     }
                     entries.push((t, moof));
-                    moof += (r & 0x7FFF_FFFF) as u64;
-                    t += dur;
+                    moof = moof.checked_add((r & 0x7FFF_FFFF) as u64)?;
+                    t = t.checked_add(dur)?;
                 }
                 return Some(build(track, &entries));
             }
@@ -88,4 +88,49 @@ fn build(track: u32, entries: &[(u64, u64)]) -> Vec<u8> {
     o.extend(0u32.to_be_bytes());
     o.extend((mfra_size as u32).to_be_bytes());
     o
+}
+
+#[cfg(test)]
+mod tests {
+    use super::mfra_from_head;
+
+    fn sidx(n_bytes_missing: usize) -> Vec<u8> {
+        let mut d = vec![0, 0, 0, 16];
+        d.extend(b"ftyp");
+        d.extend([0u8; 8]);
+        let mut s = Vec::new();
+        s.extend([0u8; 4]); // version 0, flags
+        s.extend(1u32.to_be_bytes()); // reference_ID
+        s.extend(90_000u32.to_be_bytes()); // timescale
+        s.extend(0u32.to_be_bytes()); // earliest_presentation_time
+        s.extend(0u32.to_be_bytes()); // first_offset
+        s.extend([0u8; 2]); // réservé
+        s.extend(1u16.to_be_bytes()); // 1 référence
+        s.extend(1000u32.to_be_bytes()); // taille du fragment
+        s.extend(90_000u32.to_be_bytes()); // durée
+        s.extend([0u8; 4]); // SAP
+        d.extend(((s.len() + 8) as u32).to_be_bytes());
+        d.extend(b"sidx");
+        d.extend(s);
+        d.truncate(d.len() - n_bytes_missing);
+        d
+    }
+
+    #[test]
+    fn sidx_complet() {
+        assert!(mfra_from_head(&sidx(0)).is_some());
+    }
+
+    #[test]
+    fn entete_tronque_ou_absurde() {
+        assert!(mfra_from_head(&[]).is_none());
+        for k in [1, 5, 12, 20] {
+            assert!(mfra_from_head(&sidx(k)).is_none(), "tronqué de {k} octets");
+        }
+        // taille 64 bits énorme : ni panique ni dépassement
+        let mut e = vec![0, 0, 0, 1];
+        e.extend(b"sidx");
+        e.extend(u64::MAX.to_be_bytes());
+        assert!(mfra_from_head(&e).is_none());
+    }
 }

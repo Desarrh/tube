@@ -121,7 +121,9 @@ impl VideoWindow {
             return None;
         }
         unsafe {
-            let root = GetAncestor(self.hwnd, GA_ROOT);
+            // la fenêtre vidéo seule (pas toute l'appli, 5120×1440 en plein écran) ; le moteur en
+            // mode fenêtre refuse TransferVideoFrame
+            let root = self.hwnd;
             let (mut rr, mut vr) = (RECT::default(), RECT::default());
             GetWindowRect(root, &mut rr).ok()?;
             GetWindowRect(self.hwnd, &mut vr).ok()?;

@@ -21,8 +21,11 @@ pub struct Jar {
 }
 
 impl Jar {
+    /// Ne garde que les cookies youtube.com ; un ancien fichier qui contenait aussi ceux de
+    /// google.com (accès au reste du compte) est réécrit aussitôt sans eux.
     pub fn load(p: &Path) -> Jar {
         let mut list = Vec::new();
+        let mut dropped = false;
         if let Ok(s) = std::fs::read_to_string(p) {
             for l in s.lines() {
                 let l = l.strip_prefix("#HttpOnly_").unwrap_or(l);
@@ -31,6 +34,10 @@ impl Jar {
                 }
                 let f: Vec<&str> = l.split('\t').collect();
                 if f.len() < 7 {
+                    continue;
+                }
+                if !f[0].ends_with("youtube.com") {
+                    dropped = true;
                     continue;
                 }
                 list.push(Cookie {
@@ -43,7 +50,11 @@ impl Jar {
                 });
             }
         }
-        Jar { list, dirty: false }
+        let mut j = Jar { list, dirty: false };
+        if dropped {
+            j.save(p);
+        }
+        j
     }
 
     pub fn save(&mut self, p: &Path) {
@@ -275,4 +286,30 @@ pub fn copy_profile(profile: &Path, dst: &Path, allow_kill: bool) -> Result<Stri
         std::thread::sleep(std::time::Duration::from_millis(3));
     }
     Err("impossible de copier les cookies (fichier verrouillé)".into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Jar;
+
+    #[test]
+    fn max_age_zero_supprime() {
+        let mut j = Jar::default();
+        j.set_cookie("SID=abc; Domain=.youtube.com; Path=/; Max-Age=3600; Secure");
+        assert_eq!(j.list.len(), 1);
+        j.set_cookie("SID=; Domain=.youtube.com; Max-Age=0");
+        assert!(j.list.is_empty());
+    }
+
+    #[test]
+    fn seulement_youtube() {
+        let p = std::env::temp_dir().join(format!("tube-test-cookies-{}.txt", std::process::id()));
+        let l = |d: &str, n: &str| format!("{d}\tTRUE\t/\tTRUE\t9999999999\t{n}\tx\n");
+        std::fs::write(&p, format!("# Netscape HTTP Cookie File\n{}{}{}", l(".youtube.com", "SID"), l(".google.com", "SID"), l("mail.google.com", "OSID"))).unwrap();
+        let j = Jar::load(&p);
+        assert_eq!(j.list.len(), 1);
+        // le fichier a été réécrit sans les cookies google.com
+        assert!(!std::fs::read_to_string(&p).unwrap().contains("google.com"));
+        let _ = std::fs::remove_file(&p);
+    }
 }

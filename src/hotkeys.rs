@@ -58,6 +58,12 @@ unsafe extern "system" fn hook(code: i32, wp: WPARAM, lp: LPARAM) -> LRESULT {
             ALT.store(is_down, Ordering::Relaxed);
         }
         let ours = k.flags.0 & LLKHF_INJECTED.0 == 0 || (k.dwExtraInfo == 0x7475_6265 && std::env::var_os("TUBE_SCRIPT").is_some());
+        // Win+L (et le bureau sécurisé) avale le relâchement de Win : sans contre-vérification,
+        // WIN resterait « appuyé » et Alt+← serait intercepté dans les autres applis.
+        let win_held = || unsafe { GetAsyncKeyState(VK_LWIN.0 as i32) < 0 || GetAsyncKeyState(VK_RWIN.0 as i32) < 0 };
+        if is_down && ours && ACTIVE.load(Ordering::Relaxed) && WIN.load(Ordering::Relaxed) && !win_held() {
+            WIN.store(false, Ordering::Relaxed);
+        }
         if is_down && ours && ACTIVE.load(Ordering::Relaxed) && WIN.load(Ordering::Relaxed) && ALT.load(Ordering::Relaxed) {
             if let Some((hk, _, _)) = LIST.iter().find(|(_, vk, _)| vk.0 as u32 == k.vkCode) {
                 if let Some(f) = SEND.get() {

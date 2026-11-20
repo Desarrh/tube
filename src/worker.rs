@@ -1,6 +1,7 @@
 //! Outils externes : yt-dlp (dans un environnement Python dédié) + deno (défis JS de YouTube).
 //! Installés automatiquement au premier lancement dans %LOCALAPPDATA%\Tube\bin, mis à jour une fois par jour.
 use serde_json::{Value, json};
+use sha2::Digest;
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::os::windows::process::CommandExt;
@@ -9,6 +10,11 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex};
 
 const NO_WINDOW: u32 = 0x0800_0000;
+
+/// deno à version fixe, vérifié avant extraction. Mise à jour : changer les deux constantes
+/// (empreinte publiée à côté de l'archive : `….zip.sha256sum`).
+const DENO_VERSION: &str = "v2.9.8";
+const DENO_SHA256: &str = "cba84b26e0df5ae7f74fc66b86a95b866872a86292ebd84fa1e959927edd93bf";
 
 fn py() -> std::path::PathBuf {
     crate::store::bin_dir().join("py").join("Scripts").join("python.exe")
@@ -37,7 +43,14 @@ pub fn setup(step: &dyn Fn(&str)) -> Result<(), String> {
     if !deno().exists() {
         step("Téléchargement de deno (défis JavaScript de YouTube)…");
         let zip = bin.join("deno.zip");
-        run(Command::new("curl.exe").args(["-sSLf", "-o"]).arg(&zip).arg("https://github.com/denoland/deno/releases/latest/download/deno-x86_64-pc-windows-msvc.zip"))?;
+        let url = format!("https://github.com/denoland/deno/releases/download/{DENO_VERSION}/deno-x86_64-pc-windows-msvc.zip");
+        run(Command::new("curl.exe").args(["-sSLf", "-o"]).arg(&zip).arg(url))?;
+        let bytes = std::fs::read(&zip).map_err(|e| e.to_string())?;
+        let got: String = sha2::Sha256::digest(&bytes).iter().map(|b| format!("{b:02x}")).collect();
+        if got != DENO_SHA256 {
+            let _ = std::fs::remove_file(&zip);
+            return Err(format!("deno : empreinte inattendue ({got}), archive refusée"));
+        }
         run(Command::new("tar.exe").arg("-xf").arg(&zip).arg("-C").arg(&bin))?;
         let _ = std::fs::remove_file(zip);
     }
@@ -85,11 +98,12 @@ impl Worker {
         let script = crate::store::dir().join("worker.py");
         std::fs::write(&script, include_str!("worker.py")).map_err(|e| e.to_string())?;
         let path = format!("{};{}", crate::store::bin_dir().display(), std::env::var("PATH").unwrap_or_default());
+        // -I : Python isolé (ni variables PYTHON*, ni site utilisateur, ni dossier du script dans
+        // sys.path) ; -X utf8 remplace PYTHONIOENCODING, ignoré en mode isolé.
         let mut child = Command::new(py())
-            .arg("-u")
+            .args(["-I", "-X", "utf8", "-u"])
             .arg(&script)
             .env("PATH", path)
-            .env("PYTHONIOENCODING", "utf-8")
             .env("TUBE_COOKIES", crate::store::cookies_path())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -122,7 +136,8 @@ impl Worker {
     }
 
     /// Envoie une requête ; la réponse arrivera sur le canal renvoyé.
-    pub fn send(&self, mut req: Value) -> Receiver<Reply> {
+    /// Si Python doit être (re)lancé, c'est fait dans un fil : jamais dans celui de l'interface.
+    pub fn send(self: &Arc<Self>, mut req: Value) -> Receiver<Reply> {
         let (tx, rx) = channel();
         let id = {
             let mut n = self.next.lock().unwrap();
@@ -130,6 +145,17 @@ impl Worker {
             *n
         };
         req["id"] = json!(id);
+        let alive = self.proc.lock().unwrap().as_mut().is_some_and(|p| matches!(p.child.try_wait(), Ok(None)));
+        if alive {
+            self.deliver(id, req, tx);
+        } else {
+            let me = self.clone();
+            std::thread::spawn(move || me.deliver(id, req, tx));
+        }
+        rx
+    }
+
+    fn deliver(&self, id: u64, req: Value, tx: Sender<Reply>) {
         let mut g = self.proc.lock().unwrap();
         let alive = g.as_mut().is_some_and(|p| matches!(p.child.try_wait(), Ok(None)));
         if !alive {
@@ -137,7 +163,7 @@ impl Worker {
                 Ok(p) => *g = Some(p),
                 Err(e) => {
                     let _ = tx.send(Err(e));
-                    return rx;
+                    return;
                 }
             }
         }
@@ -150,11 +176,10 @@ impl Worker {
                 *g = None;
             }
         }
-        rx
     }
 
     /// `prio` : 0 = clic, 1 = survol, 2 = préchargement.
-    pub fn extract(&self, video_id: &str, prio: u8) -> Receiver<Reply> {
+    pub fn extract(self: &Arc<Self>, video_id: &str, prio: u8) -> Receiver<Reply> {
         self.send(json!({"cmd": "extract", "prio": prio, "url": format!("https://www.youtube.com/watch?v={video_id}")}))
     }
 

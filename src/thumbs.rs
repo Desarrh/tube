@@ -5,6 +5,8 @@
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Condvar, Mutex};
 
+const CACHE_BYTES: usize = 80 << 20;
+
 pub enum Slot {
     Loading,
     Ready(egui::TextureHandle),
@@ -17,8 +19,9 @@ struct Shared {
     queue: Mutex<VecDeque<Key>>,
     cv: Condvar,
     done: Mutex<Vec<(Key, Option<egui::ColorImage>)>>,
-    /// images encodées (JPEG/WebP, ~30 Ko) : un changement de taille ne retélécharge rien
-    bytes: Mutex<(HashMap<String, Arc<Vec<u8>>>, VecDeque<String>)>,
+    /// Images encodées (JPEG/WebP, ~30 Ko) : un changement de taille ne retélécharge rien.
+    /// (contenu, ordre d'arrivée, total en octets)
+    bytes: Mutex<(HashMap<String, Arc<Vec<u8>>>, VecDeque<String>, usize)>,
 }
 
 pub struct Thumbs {
@@ -57,7 +60,7 @@ impl Thumbs {
             queue: Mutex::new(VecDeque::new()),
             cv: Condvar::new(),
             done: Mutex::new(Vec::new()),
-            bytes: Mutex::new((HashMap::new(), VecDeque::new())),
+            bytes: Mutex::new((HashMap::new(), VecDeque::new(), 0)),
         });
         for _ in 0..6 {
             let sh = sh.clone();
@@ -77,11 +80,17 @@ impl Thumbs {
                 let bytes = cached.or_else(|| {
                     let b = Arc::new(api.get_bytes(&url).ok()?);
                     let mut c = sh.bytes.lock().unwrap();
-                    c.0.insert(url.clone(), b.clone());
-                    c.1.push_back(url.clone());
-                    while c.1.len() > 1500 {
-                        if let Some(old) = c.1.pop_front() {
-                            c.0.remove(&old);
+                    if let Some(prev) = c.0.insert(url.clone(), b.clone()) {
+                        c.2 -= prev.len();
+                    } else {
+                        c.1.push_back(url.clone());
+                    }
+                    c.2 += b.len();
+                    // ~80 Mo de fichiers d'images au plus, les plus anciens évincés
+                    while c.2 > CACHE_BYTES {
+                        let Some(old) = c.1.pop_front() else { break };
+                        if let Some(x) = c.0.remove(&old) {
+                            c.2 -= x.len();
                         }
                     }
                     Some(b)
