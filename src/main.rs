@@ -6,6 +6,7 @@ mod app;
 mod cookies;
 mod hotkeys;
 mod live;
+mod opera;
 mod viz;
 mod smtc;
 mod http;

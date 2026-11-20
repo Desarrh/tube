@@ -12,7 +12,7 @@ pub fn test_mode() -> bool {
 }
 
 /// `%LOCALAPPDATA%\Tube` : cookies, outils (venv, deno), journal — données lourdes ou locales.
-fn real_dir() -> PathBuf {
+pub fn real_dir() -> PathBuf {
     socle::paths::cache_dir("Tube")
 }
 

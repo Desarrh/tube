@@ -488,6 +488,9 @@ impl App {
                     go = true;
                 }
                 ui.label(RichText::new("coupe le réseau d'Opera ~1 s").size(11.5).color(p.muted));
+                if ui.button("Réappliquer le réglage d'Opera").on_hover_text("Après une mise à jour d'Opera : remet le drapeau qui laisse Tube relire ses cookies sans le couper (effet au prochain démarrage d'Opera)").clicked() {
+                    self.opera_flag();
+                }
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     if ui.small_button("Plus tard").clicked() {
                         later = true;

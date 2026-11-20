@@ -37,7 +37,8 @@ Requirements: Windows 10/11 x64, **Python 3** (used only to run yt-dlp), and the
 
 1. Run `dist\Tube.exe`. On first start it creates `%LOCALAPPDATA%\Tube\bin`, with a Python venv for yt-dlp and `deno.exe`. This takes about a minute.
 2. Click **« Se connecter avec Opera GX »** (Opera, Chrome and Edge are also detected). Tube copies the browser's YouTube/Google cookies to `%LOCALAPPDATA%\Tube\cookies.txt`. No password is ever typed or read.
-   - Chromium browsers lock their cookie file while they run. Only the browser's *network service* child process holds that lock: Tube terminates it, copies the file within ~40 ms, and the browser restarts the service by itself, which means about a 1 s network hiccup in the browser.
+   - Chromium browsers lock their cookie file while they run. Tube never interrupts the browser on its own: when the file is locked and the session has expired, a banner offers **Reconnecter** (Tube stops the browser's *network service* child process, copies the file within ~40 ms, and the browser restarts the service by itself: about a 1 s network hiccup).
+   - Better: start Opera GX with `--disable-features=LockProfileCookieDatabase`, and the cookies can be read at any time without interrupting anything. `Tube.exe --opera-drapeau` (or the banner's **Réappliquer le réglage d'Opera** button, or `scripts\opera-drapeau.ps1`) adds that flag to Opera GX's shortcuts and to its Windows autostart entry. It changes nothing if the flag is already there, and backs up every shortcut or value before changing it. Run it again after an Opera update that recreates its shortcuts.
    - Browsers rotate session cookies, so Tube re-imports them automatically when its copy is older than 30 minutes, or when YouTube reports the session as signed out (at most once every 10 minutes).
 3. yt-dlp updates itself once a day (`pip -U`).
 

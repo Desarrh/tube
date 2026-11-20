@@ -630,6 +630,17 @@ impl App {
         });
     }
 
+    /// Ajoute (ou remet après une mise à jour d'Opera) le drapeau qui laisse ses cookies lisibles.
+    /// Sauvegardes à côté du projet en développement, sinon dans le dossier de Tube.
+    pub fn opera_flag(&mut self) {
+        let dev = std::env::current_exe().ok().and_then(|e| e.parent()?.parent().map(|p| p.to_path_buf())).filter(|p| p.join("Cargo.toml").exists());
+        let backup = dev.unwrap_or_else(crate::store::real_dir).join("sauvegarde-raccourcis-opera");
+        let r = crate::opera::apply(&backup);
+        let added = r.iter().filter(|l| l.contains("ajouté")).count();
+        let err = r.iter().any(|l| l.contains("erreur") || l.starts_with("clé Run"));
+        self.toast(if err { "Opera : une modification a échoué (voir tube.log)".to_string() } else if added > 0 { format!("Opera : drapeau ajouté à {added} lancement(s), effet au prochain démarrage d'Opera") } else { "Opera : réglage déjà en place".into() });
+    }
+
     pub fn toast(&mut self, t: impl Into<String>) {
         self.toast = Some((t.into(), Instant::now()));
     }
@@ -919,6 +930,33 @@ impl App {
     /// recherche (intégration « Guide » d'Ultimate : `Tube.exe "nom du jeu guide"`).
     pub fn open_arg(&mut self, arg: &str) {
         let a = arg.trim();
+        // commandes d'entretien (transmises à l'instance en cours par `Tube.exe --…`)
+        if a == "--opera-drapeau" {
+            return self.opera_flag();
+        }
+        if let Some(out) = a.strip_prefix("--diag-dossiers ") {
+            let _ = std::fs::write(out.trim().trim_matches('"'), crate::opera::diag());
+            return;
+        }
+        if let Some(f) = a.strip_prefix("--adopter-cookies ") {
+            // cookies.txt d'une autre copie de Tube : repris seulement s'il est plus récent
+            let f = std::path::Path::new(f.trim().trim_matches('"'));
+            let dst = crate::store::cookies_path();
+            let mt = |p: &std::path::Path| std::fs::metadata(p).and_then(|m| m.modified()).ok();
+            if f.exists() && !crate::store::test_mode() && (!dst.exists() || mt(f) > mt(&dst)) && std::fs::copy(f, &dst).is_ok() {
+                let _ = self.tx.send(Msg::Cookies(Ok("cookies repris".into())));
+            }
+            return;
+        }
+        if let Some(f) = a.strip_prefix("--adopter-reglages ") {
+            let f = std::path::Path::new(f.trim().trim_matches('"'));
+            if f.exists() && !crate::store::test_mode() {
+                self.s = socle::settings::load_from(f);
+                self.s.save();
+                self.toast("Réglages fusionnés repris");
+            }
+            return;
+        }
         if let Some(id) = crate::ui::video_id_from(a) {
             let it = Item { kind: Kind::Video, id, ..Default::default() };
             self.open(&it, None);
