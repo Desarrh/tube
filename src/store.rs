@@ -219,10 +219,18 @@ impl Settings {
         }
         *last = b;
         let s = self.clone();
-        std::thread::spawn(move || s.write());
+        let mut w = WRITER.lock().unwrap();
+        if let Some(h) = w.take() {
+            let _ = h.join();
+        }
+        *w = Some(std::thread::spawn(move || s.write()));
     }
     /// Enregistrement immédiat (fermeture, réglage explicite).
     pub fn save(&mut self) {
+        // une écriture de fond encore en cours ne doit pas passer après celle-ci
+        if let Some(h) = WRITER.lock().unwrap().take() {
+            let _ = h.join();
+        }
         self.trim();
         if let Ok(b) = serde_json::to_vec(&*self) {
             *LAST_SAVED.lock().unwrap() = b;
@@ -249,6 +257,7 @@ impl Settings {
 }
 
 static LAST_SAVED: std::sync::Mutex<Vec<u8>> = std::sync::Mutex::new(Vec::new());
+static WRITER: std::sync::Mutex<Option<std::thread::JoinHandle<()>>> = std::sync::Mutex::new(None);
 
 /// Journal de diagnostic (%LOCALAPPDATA%\Tube\tube.log), limité à ~1 Mo.
 pub fn log(msg: &str) {

@@ -155,7 +155,9 @@ impl Runner {
         let (Some(w), Some(h)) = (NonZeroU32::new(size.width), NonZeroU32::new(size.height)) else { return };
         self.last_frame = Instant::now();
         let t_paint = Instant::now();
-        let raw = gfx.egui.take_egui_input(&gfx.window);
+        let mut raw = gfx.egui.take_egui_input(&gfx.window);
+        // mode test : la fenêtre cachée n'a jamais le focus ; sans effet sinon
+        socle::testmode::prepare_input(&mut raw);
         let out = self.ctx.run_ui(raw, |ui| {
             app.tick();
             app.handle_keys(ui.ctx());
