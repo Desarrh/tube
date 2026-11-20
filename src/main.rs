@@ -417,6 +417,7 @@ impl Runner {
                     store::log(&format!("après Ctrl+→ : {:?} ({}) · chapitres {ch} · moments forts {hl:?}", app.player().map(|p| p.time()), app.toast.as_ref().map(|t| t.0.clone()).unwrap_or_default()));
                 }
                 "autoplay" => app.s.autoplay_next = true,
+                "reconnect" => app.reconnect = true,
                 "sugglog" => store::log(&format!("suggestions : {:?}", app.search_state.suggestions.iter().map(|s| s.text.clone()).collect::<Vec<_>>())),
                 "palette" => app.palette.open_with(arg.to_string()),
                 "type" => {
