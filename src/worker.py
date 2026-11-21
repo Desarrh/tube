@@ -1,7 +1,7 @@
 """Worker yt-dlp persistant de Tube : une requête JSON par ligne sur stdin, une réponse par ligne sur stdout.
 Garder le module chargé évite ~1,5 s de démarrage par vidéo et réutilise les caches de yt-dlp.
 Les extractions passent une à une, par priorité (clic, puis survol, puis préchargement)."""
-import json, os, sys, time, threading, queue, itertools, http.cookiejar
+import json, os, re, sys, time, threading, queue, itertools, http.cookiejar
 sys.stdout.reconfigure(encoding="utf-8")
 sys.stdin.reconfigure(encoding="utf-8")
 import yt_dlp
@@ -9,13 +9,15 @@ import yt_dlp
 COOKIES = os.environ.get("TUBE_COOKIES", "")
 
 
-def make(auth):
+def make(auth, skip_hls=True):
     o = {"quiet": True, "no_warnings": True, "skip_download": True, "noplaylist": True, "noprogress": True,
          # pas de flux du début pour les directs : seulement le bord du direct
-         "live_from_start": False,
-         # pas de manifeste HLS pour les vidéos (Tube lit les flux https) : ~1,7 s de gagnées par
-         # extraction. Les directs passent par l'instance « mweb », qui le garde.
-         "extractor_args": {"youtube": {"skip": ["hls"]}}}
+         "live_from_start": False}
+    if skip_hls:
+        # pas de manifeste HLS pour les vidéos (Tube lit les flux https) : ~1,7 s de gagnées par
+        # extraction. Un direct n'a QUE du HLS : il échoue ici (« No video formats ») et repasse
+        # par l'instance complète (voir `run`).
+        o["extractor_args"] = {"youtube": {"skip": ["hls"]}}
     if auth and COOKIES and os.path.isfile(COOKIES):
         o["cookiefile"] = COOKIES
     return yt_dlp.YoutubeDL(o)
@@ -30,6 +32,7 @@ def inst():
     le compte seulement si la vidéo l'exige ; « mweb » pour les directs (vidéo et son mêlés)."""
     if getattr(local, "gen", -1) != GEN[0]:
         local.anon, local.auth = make(False), make(True)
+        local.authfull = make(True, False)
         local.live = yt_dlp.YoutubeDL({"quiet": True, "no_warnings": True, "skip_download": True, "noplaylist": True,
                                        "extractor_args": {"youtube": {"player_client": ["mweb"]}}})
         local.gen = GEN[0]
@@ -39,14 +42,26 @@ def inst():
 NEEDS_AUTH = ("sign in", "age", "members", "private", "confirm", "inappropriate", "premium")
 
 
+def run(url, quick, full):
+    """Extraction rapide (sans HLS) ; si elle ne trouve aucun format, c'est un direct, une
+    première ou un direct tout juste fini (HLS seulement) : on refait avec le HLS."""
+    try:
+        return quick.extract_info(url, download=False)
+    except Exception as e:
+        if "no video formats" not in str(e).lower():
+            raise
+        return full.extract_info(url, download=False)
+
+
 def extract(url):
     i = inst()
     try:
-        info = i.anon.extract_info(url, download=False)
+        # repli anonyme : client « mweb », dont le HLS mêle vidéo et son (directs)
+        info = run(url, i.anon, i.live)
     except Exception as e:
         if not any(k in str(e).lower() for k in NEEDS_AUTH):
             raise
-        info = i.auth.extract_info(url, download=False)
+        info = run(url, i.auth, i.authfull)
     keep = ("format_id", "ext", "vcodec", "acodec", "height", "width", "fps", "tbr", "url", "dynamic_range", "format_note", "language", "language_preference")
     fm = [{k: f.get(k) for k in keep} for f in info.get("formats", []) if f.get("protocol") == "https" and f.get("url")]
     # planches d'aperçu (vignettes au survol de la barre de progression) : 160×90 de préférence
@@ -120,6 +135,30 @@ def import_cookies(src, out, browser="opera"):
     return {"count": n}
 
 
+def human(msg):
+    """Message d'erreur lisible à la place de la trace brute de yt-dlp."""
+    m = re.sub(r"\x1b\[[0-9;]*m", "", msg).strip()
+    low = m.lower()
+    if "live event will begin" in low or "premieres in" in low:
+        when = re.search(r"(?:begin|premieres) in ([^.;]+)", m)
+        return "Ce direct n'a pas encore commencé" + (f" (début dans {when.group(1).strip()})" if when else "") + "."
+    for keys, text in [
+        (("no video formats",), "Aucun flux lisible pour cette vidéo (direct tout juste terminé, encore en traitement chez YouTube ?). Réessaie dans quelques minutes."),
+        (("private video",), "Vidéo privée."),
+        (("members-only", "join this channel"), "Vidéo réservée aux membres de la chaîne."),
+        (("confirm your age", "inappropriate", "age-restricted"), "Vidéo soumise à une limite d'âge : il faut être connecté."),
+        (("not a bot",), "YouTube demande une vérification anti-robot : reconnecte le compte."),
+        (("video unavailable", "video is unavailable", "has been removed", "terminated"), "Vidéo indisponible ou supprimée."),
+        (("not available in your country",), "Vidéo non disponible dans ce pays."),
+        (("timed out", "getaddrinfo", "connection reset", "unable to download"), "Problème de réseau pendant l'extraction. Réessaie."),
+    ]:
+        if any(k in low for k in keys):
+            return text
+    # sinon : la cause, sans le préfixe « ERROR: [youtube] id: » ni l'invitation à signaler un bug
+    m = re.sub(r"^ERROR:\s*(\[[^\]]+\]\s*)?[\w-]{11}:\s*", "", m)
+    return m.split("; please report")[0].strip()
+
+
 out_lock = threading.Lock()
 # Extractions UNE à la fois : plusieurs en parallèle donnent des adresses bridées (~100 Ko/s).
 # File à priorité : 0 = clic, 1 = survol, 2 = préchargement ; résultats récents réutilisés.
@@ -162,7 +201,7 @@ def handle(req):
             raise ValueError(f"commande inconnue {cmd}")
         out = {"ok": True, "res": res}
     except Exception as e:
-        out = {"ok": False, "error": str(e).replace("[0;31m", "").replace("[0m", "")}
+        out = {"ok": False, "error": human(str(e))}
     reply(rid, out, t)
 
 

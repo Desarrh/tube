@@ -81,6 +81,8 @@ pub struct Feed {
 }
 
 pub enum Msg {
+    /// Image de fond du mode audio seul (identifiant de la vidéo)
+    Frame(String, Option<egui::ColorImage>),
     Feed(String, Result<Page, String>, bool),
     Extracted(String, Result<Value, String>),
     Related(String, Vec<Item>),
@@ -270,6 +272,9 @@ pub struct App {
     auto_next: bool,
     /// image figée affichée (grisée) pendant une pause ou une attente réseau : (vidéo, texture)
     pub still: Option<(String, egui::TextureHandle, egui::Vec2, bool)>,
+    /// Mode audio seul : une vraie image de la vidéo en fond (identifiant de la vidéo).
+    pub audio_bg: Option<(String, egui::TextureHandle)>,
+    audio_bg_asked: String,
     /// pas de capture avant cet instant (le temps que l'image d'un saut s'affiche)
     pub still_after: Instant,
     /// test : défilement automatique de la grille (points par image)
@@ -559,6 +564,8 @@ impl App {
             play_tab: 0,
             auto_next: false,
             still: None,
+            audio_bg: None,
+            audio_bg_asked: String::new(),
             still_after: Instant::now(),
             dbg_scroll: (0.0, 0.0),
             preview: None,
@@ -1325,7 +1332,26 @@ impl App {
         } else {
             a
         };
-        // audio seul : le flux son est ouvert à la place de la vidéo
+        // audio seul : le flux son est ouvert à la place de la vidéo ; une image de la vidéo vers
+        // 1 s est décodée à part pour le fond, sans retarder le son (VP9 choisi, sinon H.264)
+        if w.audio_only && !is_live && a.is_some() && self.audio_bg.as_ref().is_none_or(|b| b.0 != w.item.id) && self.audio_bg_asked != w.item.id {
+            self.audio_bg_asked = w.item.id.clone();
+            let mut cands: Vec<(String, String)> = v.iter().map(|f| (f.url.clone(), f.ext.clone())).collect();
+            let h264 = w.info.as_ref().and_then(|i| i["formats"].as_array()).into_iter().flatten()
+                .filter(|f| f["vcodec"].as_str().is_some_and(|c| c.starts_with("avc1")) && f["height"].as_u64().unwrap_or(0) <= 1080)
+                .max_by_key(|f| f["height"].as_u64().unwrap_or(0));
+            if let Some(f) = h264 {
+                cands.push((f["url"].as_str().unwrap_or("").to_string(), f["ext"].as_str().unwrap_or("mp4").to_string()));
+            }
+            let (tx, ctx, id) = (self.tx.clone(), self.ctx.clone(), w.item.id.clone());
+            std::thread::spawn(move || {
+                let t = Instant::now();
+                let img = cands.iter().find_map(|(u, e)| crate::player::grab_frame(u, e, 1.0, 2560));
+                crate::store::log(&format!("fond audio seul {id} : {} en {} ms", if img.is_some() { "image décodée" } else { "échec" }, t.elapsed().as_millis()));
+                let _ = tx.send(Msg::Frame(id, img));
+                ctx.request_repaint();
+            });
+        }
         let (v, a) = if w.audio_only && !is_live && a.is_some() { (a.clone(), None) } else { (v, a) };
         let Some(v) = v else {
             w.error = Some("Aucun flux lisible pour cette vidéo.".into());
@@ -1601,6 +1627,13 @@ impl App {
     }
 
     pub fn set_audio_only(&mut self, on: bool) {
+        // en venant de la vidéo : sa dernière image affichée sert de fond
+        if on && self.watch.as_ref().is_some_and(|w| !w.audio_only) {
+            if let (Some(img), Some(id)) = (self.vidwin.as_ref().and_then(|v| v.snapshot(2560)), self.watch.as_ref().map(|w| w.item.id.clone())) {
+                self.audio_bg = Some((id.clone(), self.ctx.load_texture("audio_bg", img, egui::TextureOptions::LINEAR)));
+                self.audio_bg_asked = id;
+            }
+        }
         let Some(w) = self.watch.as_mut() else { return };
         w.audio_only = on;
         if let Some(info) = w.info.clone() {
@@ -2182,8 +2215,9 @@ impl App {
                     }
                     Err(e) => {
                         if playing_this {
-                            let msg = if e.contains("Sign in") || e.contains("bot") {
-                                format!("YouTube demande une vérification anti-robot. Ouvre youtube.com dans ton navigateur, puis Paramètres › Reconnecter.\n\n{e}")
+                            // le worker traduit déjà ses erreurs (`human` dans worker.py)
+                            let msg = if e.contains("anti-robot") || e.contains("Sign in") {
+                                "YouTube demande une vérification anti-robot. Ouvre youtube.com dans ton navigateur, puis Paramètres › Reconnecter.".to_string()
                             } else {
                                 e
                             };
@@ -2280,6 +2314,11 @@ impl App {
                         self.toast = Some(("Sous-titres indisponibles".into(), Instant::now()));
                     }
                     w.cues = cues;
+                }
+            }
+            Msg::Frame(id, img) => {
+                if let Some(img) = img.filter(|_| self.watch.as_ref().is_some_and(|w| w.item.id == id)) {
+                    self.audio_bg = Some((id, self.ctx.load_texture("audio_bg", img, egui::TextureOptions::LINEAR)));
                 }
             }
             Msg::Toast(t) => {

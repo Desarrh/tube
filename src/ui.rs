@@ -1298,7 +1298,20 @@ impl App {
             self.still = None;
             let playing = w.player.as_ref().is_some_and(|p| p.wants_play());
             let thumb = w.item.thumb.clone();
-            self.paint_thumb(ui, video, &thumb, None);
+            let id = w.item.id.clone();
+            // fond : une vraie image de la vidéo (dernière affichée, ou décodée vers 1 s) ;
+            // en attendant, la miniature en haute définition, sinon la miniature courante
+            if let Some((_, t)) = self.audio_bg.as_ref().filter(|b| b.0 == id) {
+                let sz = t.size_vec2();
+                let s = (video.width() / sz.x).min(video.height() / sz.y);
+                let r = Rect::from_center_size(video.center(), sz * s);
+                ui.painter().rect_filled(video, CornerRadius::ZERO, Color32::BLACK);
+                ui.painter().image(t.id(), r, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
+            } else {
+                let hd = format!("https://i.ytimg.com/vi/{id}/maxresdefault.jpg");
+                let url = if self.thumbs.get(&hd, 0).is_some() { hd } else { thumb };
+                self.paint_thumb(ui, video, &url, None);
+            }
             if self.viz.is_none() && !self.viz_failed && playing {
                 self.viz = crate::viz::Viz::start();
                 self.viz_failed = self.viz.is_none();

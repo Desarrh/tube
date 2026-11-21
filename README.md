@@ -50,7 +50,7 @@ Build from source: `cargo build --release`, which produces `target\release\tube.
 - Quality up to 4K (VP9 preferred, AV1/H.264 when they offer more), a quality menu, speed 0.25–3×, chapters on the seek bar, and SponsorBlock segments shown in green.
 - Hovering the seek bar shows a preview frame, taken from YouTube's storyboards.
 - **Audio language**: the video's *original* audio track is chosen by default. YouTube's auto-dubbed tracks are sometimes served first, so a French video could otherwise play in English. A menu lists every available language.
-- **Live streams** play from the live edge. They use HLS through a custom byte stream, with the `mweb` client because it serves muxed audio and video.
+- **Live streams** play from the live edge. The fast extraction (no HLS) finds no format for a live, so the worker retries with the `mweb` client. They use HLS through a custom byte stream, with the `mweb` client because it serves muxed audio and video.
 - **Hover preview**: after 0.65 s on a thumbnail, a muted 480p preview plays inside it. It can be turned off in the settings.
 - **Channels**: click a channel name to open its videos; middle-click opens it in a new tab.
 - The right-click menu also offers *Pas intéressé* and *Ne pas recommander la chaîne*, which send the same feedback as the website.
@@ -59,7 +59,7 @@ Build from source: `cargo build --release`, which produces `target\release\tube.
 - **Cinema mode** (key C): in full screen and half screen, the black bars take on the colours of the picture's edges. They are sampled 4 times per second, smoothed, and drawn as a gradient fading to black.
 - When playback is paused, the frame is shown in dimmed black and white with a pause symbol. While buffering, it keeps its colours and shows a spinner.
 - The home page starts with a *Reprendre* row of videos you have started.
-- **Audio only** (in the quality menu) downloads no video, which suits music.
+- **Audio only** (in the quality menu) downloads no video, which suits music. The background is a real full-quality frame of the video: the last one shown, or one decoded at about 1 s in the background (the HD thumbnail until then).
 - `,` / `.` step one frame back or forward, and Ctrl+C copies a `youtu.be` link at the current time.
 - **⚙ menu** in the player: quality, speed, audio language, subtitles, sleep timer, audio only, loop, cinema mode and screenshot. Sub-pages work like YouTube's, and a badge shows 4K / QHD / HD.
 - **Subtitles** (key V or the CC button): manual tracks, automatic ones and **automatic translation into French**. They are drawn on a dark band over the video, and the last language you chose is reused.

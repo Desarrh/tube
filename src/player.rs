@@ -358,3 +358,70 @@ impl Drop for Player {
         }
     }
 }
+
+/// Une image de la vidéo vers `at` secondes, décodée hors de tout lecteur (fond du mode audio
+/// seul). Bloquant : à lancer dans un fil. Même flux HTTP que la lecture ; `max_w` de large au plus.
+pub fn grab_frame(url: &str, ext: &str, at: f64, max_w: u32) -> Option<egui::ColorImage> {
+    unsafe {
+        let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+        let src = source(url, ext, 16).ok()?;
+        let mut attrs = None;
+        MFCreateAttributes(&mut attrs, 1).ok()?;
+        let attrs = attrs?;
+        // conversion en RGB32 par le processeur vidéo de Media Foundation
+        attrs.SetUINT32(&MF_SOURCE_READER_ENABLE_VIDEO_PROCESSING, 1).ok()?;
+        let reader = MFCreateSourceReaderFromMediaSource(&src, &attrs).ok()?;
+        let first = MF_SOURCE_READER_FIRST_VIDEO_STREAM.0 as u32;
+        let _ = reader.SetStreamSelection(MF_SOURCE_READER_ALL_STREAMS.0 as u32, false);
+        reader.SetStreamSelection(first, true).ok()?;
+        let mt = MFCreateMediaType().ok()?;
+        mt.SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Video).ok()?;
+        mt.SetGUID(&MF_MT_SUBTYPE, &MFVideoFormat_RGB32).ok()?;
+        reader.SetCurrentMediaType(first, None, &mt).ok()?;
+        // position en unités de 100 ns (PROPVARIANT VT_I8)
+        let mut pos = windows::Win32::System::Com::StructuredStorage::PROPVARIANT::default();
+        (*pos.Anonymous.Anonymous).vt = windows::Win32::System::Variant::VT_I8;
+        (*pos.Anonymous.Anonymous).Anonymous.hVal = (at * 1e7) as i64;
+        let _ = reader.SetCurrentPosition(&GUID::zeroed(), &pos);
+        for _ in 0..240 {
+            let (mut flags, mut ts, mut sample) = (0u32, 0i64, None);
+            reader.ReadSample(first, 0, None, Some(&mut flags), Some(&mut ts), Some(&mut sample)).ok()?;
+            if flags & MF_SOURCE_READERF_ENDOFSTREAM.0 as u32 != 0 {
+                return None;
+            }
+            let Some(s) = sample else { continue };
+            // première image à partir de `at` (le saut tombe sur l'image clé d'avant)
+            if (ts as f64) < at * 1e7 - 2e5 {
+                continue;
+            }
+            let cur = reader.GetCurrentMediaType(first).ok()?;
+            let size = cur.GetUINT64(&MF_MT_FRAME_SIZE).ok()?;
+            let (w, h) = ((size >> 32) as usize, (size & 0xFFFF_FFFF) as usize);
+            let stride = cur.GetUINT32(&MF_MT_DEFAULT_STRIDE).map(|s| s as i32).unwrap_or((w * 4) as i32);
+            let buf = s.ConvertToContiguousBuffer().ok()?;
+            let (mut p, mut len) = (std::ptr::null_mut(), 0u32);
+            buf.Lock(&mut p, None, Some(&mut len)).ok()?;
+            let data = std::slice::from_raw_parts(p, len as usize);
+            let row = stride.unsigned_abs() as usize;
+            let mut rgba = Vec::with_capacity(w * h * 4);
+            for y in 0..h {
+                // pas négatif : image enregistrée de bas en haut
+                let yy = if stride < 0 { h - 1 - y } else { y };
+                let Some(line) = data.get(yy * row..yy * row + w * 4) else { break };
+                for c in line.chunks_exact(4) {
+                    rgba.extend_from_slice(&[c[2], c[1], c[0], 255]);
+                }
+            }
+            let _ = buf.Unlock();
+            if rgba.len() != w * h * 4 {
+                return None;
+            }
+            let mut img = image::RgbaImage::from_raw(w as u32, h as u32, rgba)?;
+            if w as u32 > max_w {
+                img = image::imageops::resize(&img, max_w, (max_w as usize * h / w) as u32, image::imageops::FilterType::Triangle);
+            }
+            return Some(egui::ColorImage::from_rgba_unmultiplied([img.width() as usize, img.height() as usize], &img));
+        }
+        None
+    }
+}

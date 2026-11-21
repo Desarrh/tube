@@ -74,7 +74,7 @@ Le décodage et l'affichage de la vidéo ne passent pas par le CPU. Seules quelq
 | Format | DASH : vidéo et son séparés |
 | Codecs | **VP9** préféré. AV1 ou H.264 n'est pris que si VP9 s'arrête sous leur définition et sous 1440p. Son **Opus**, sinon AAC |
 | Pistes exclues | Pistes « drc » et HDR. La piste audio **originale** est choisie (doublages ignorés par défaut) |
-| Directs | HLS, client `mweb` (vidéo et son dans le même flux) |
+| Directs | HLS, client `mweb` (vidéo et son dans le même flux). L'extraction rapide (sans HLS) ne trouve aucun format pour un direct : le worker refait alors l'extraction avec le client `mweb` (~4 s au total) |
 | Décodage et affichage | **Media Foundation** `IMFMediaEngine` en mode `MF_MEDIA_ENGINE_PLAYBACK_HWND` : décodage GPU, rendu direct dans une fenêtre enfant |
 | Vidéo + son | Source agrégée `MFCreateAggregateSource`. Le moteur ne sait ouvrir qu'une adresse : une extension du moteur résout l'adresse `tubeagg://…` en cette source agrégée |
 | Réseau | `IMFByteStream` maison (`http.rs`, `live.rs`) |
@@ -237,6 +237,7 @@ Les captures d'image vont dans `Images\Tube`. Les sauvegardes des raccourcis d'O
 - `#[implement]` pour les objets COM.
 
 **Gestion d'erreurs.**
+- Les erreurs de yt-dlp sont traduites en messages lisibles par le worker (`human` dans `worker.py`).
 - Rétablissement automatique : adresse expirée, lecture bloquée 12 s, segments de direct refusés, worker relancé. Tube refait l'extraction et reprend à la même position. Le worker réutilise une extraction pendant 120 s.
 - Notification en bas de la fenêtre (~3 s).
 
@@ -267,6 +268,7 @@ Les captures d'image vont dans `Images\Tube`. Les sauvegardes des raccourcis d'O
 
 **Lecture :**
 - Jusqu'en 4K60 ; qualité adaptative si le débit ne suit pas.
+- Audio seul : en fond, une vraie image de la vidéo, en pleine qualité. C'est la dernière image affichée si on vient de la vidéo ; sinon, une image vers 1 s, décodée à part (`player::grab_frame`, lecteur de source Media Foundation) sans retarder le son (~3,5 s). En attendant, la miniature HD.
 - Menu ⚙ : qualité, vitesse (0,25 à 3×, mémorisée par chaîne), langue audio (originale par défaut), sous-titres avec traduction automatique en français, minuterie, boucle, audio seul avec spectre, mode cinéma, capture.
 - Chapitres, courbe « les plus revus », vignette de prévisualisation au survol de la barre, SponsorBlock.
 - Reprise locale et reprise depuis la progression YouTube.
