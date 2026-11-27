@@ -174,6 +174,35 @@ pub fn browser_profiles() -> Vec<(String, PathBuf)> {
     v
 }
 
+/// Le navigateur est-il la fenêtre au premier plan (l'utilisateur s'en sert) ?
+pub fn browser_foreground() -> bool {
+    use windows::Win32::System::Threading::*;
+    use windows::Win32::UI::WindowsAndMessaging::*;
+    unsafe {
+        let w = GetForegroundWindow();
+        let mut pid = 0u32;
+        GetWindowThreadProcessId(w, Some(&mut pid));
+        let Ok(h) = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) else { return false };
+        let mut buf = [0u16; 512];
+        let mut n = buf.len() as u32;
+        let ok = QueryFullProcessImageNameW(h, PROCESS_NAME_WIN32, windows::core::PWSTR(buf.as_mut_ptr()), &mut n).is_ok();
+        let _ = windows::Win32::Foundation::CloseHandle(h);
+        let exe = String::from_utf16_lossy(&buf[..n as usize]).to_lowercase();
+        ok && ["opera.exe", "chrome.exe", "msedge.exe"].iter().any(|b| exe.ends_with(b))
+    }
+}
+
+/// Téléchargement en cours dans le navigateur : fichier temporaire (.crdownload, .opdownload)
+/// modifié depuis moins de 2 min dans le dossier Téléchargements.
+pub fn download_in_progress() -> bool {
+    let Some(d) = dirs::download_dir() else { return false };
+    std::fs::read_dir(d).into_iter().flatten().flatten().any(|e| {
+        let p = e.path();
+        let ext = p.extension().map(|x| x.to_string_lossy().to_lowercase()).unwrap_or_default();
+        (ext == "crdownload" || ext == "opdownload") && e.metadata().and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok()).is_some_and(|a| a.as_secs() < 120)
+    })
+}
+
 /// Vrai si le fichier de cookies du navigateur a changé après notre copie (rotation des jetons).
 pub fn browser_newer(profile: &Path, ours: &Path) -> bool {
     let mt = |p: &Path| std::fs::metadata(p).and_then(|m| m.modified()).ok();

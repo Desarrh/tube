@@ -249,6 +249,10 @@ pub struct App {
     browser_locked: bool,
     /// Dernière vérification des cookies du navigateur (rafraîchissement toutes les 5 min)
     cookie_check: Instant,
+    /// Dernière reconnexion automatique (service réseau du navigateur relancé) : une par 10 min
+    auto_reco_at: Option<Instant>,
+    /// Dernière nouvelle tentative de reconnexion automatique pendant que le bandeau est affiché
+    auto_reco_try: Instant,
     /// Pages chargées pendant que YouTube nous voyait déconnecté : rechargées après reconnexion
     anon_feeds: Vec<String>,
     /// session expirée et copie silencieuse impossible : bandeau « Reconnecter »
@@ -555,6 +559,8 @@ impl App {
             browser_locked: false,
             cookie_check: Instant::now(),
             anon_feeds: Vec::new(),
+            auto_reco_at: None,
+            auto_reco_try: Instant::now(),
             reconnect: false,
             toast: None,
             mode: Mode::Normal,
@@ -1933,6 +1939,10 @@ impl App {
     // ---------- Boucle ----------
     /// Logique périodique (messages des fils, lecteur, SponsorBlock, sauvegardes). Renvoie le délai souhaité avant le prochain passage.
     pub fn tick(&mut self) -> Option<Duration> {
+        if self.reconnect && self.browser_locked && self.auto_reco_try.elapsed() > Duration::from_secs(60) {
+            self.auto_reco_try = Instant::now();
+            self.auto_reconnect(false);
+        }
         // toutes les 5 min : si le navigateur a fait tourner ses jetons, on reprend sa copie fraîche
         // (copie directe, rien n'est arrêté ; fichier verrouillé = on le note, sans rien afficher)
         if self.cookie_check.elapsed() > Duration::from_secs(300) && self.login == Login::Ok && !crate::store::test_mode() {
@@ -2365,7 +2375,9 @@ impl App {
                         // en arrière-plan : la session marche peut-être encore ; le bandeau ne
                         // s'affiche que si YouTube nous voit déconnecté (session_lost)
                         if !quiet || !self.anon_feeds.is_empty() {
-                            self.reconnect = true;
+                            // session perdue et fichier verrouillé : reconnexion automatique si
+                            // elle ne gêne pas (sinon bandeau « Reconnecter »)
+                            self.auto_reconnect(true);
                         }
                     }
                     let had = self.api.jar.lock().unwrap().logged_in();
@@ -2437,7 +2449,11 @@ impl App {
         if crate::store::test_mode() {
             return;
         }
-        if self.browser_locked || self.reimported.is_some_and(|t| t.elapsed() < Duration::from_secs(600)) {
+        if self.browser_locked {
+            self.auto_reconnect(true);
+            return;
+        }
+        if self.reimported.is_some_and(|t| t.elapsed() < Duration::from_secs(600)) {
             self.reconnect = true;
             return;
         }
@@ -2447,6 +2463,40 @@ impl App {
             self.import_cookies(p, false);
         } else {
             self.reconnect = true;
+        }
+    }
+
+    /// Reconnexion sans clic (choix de l'utilisateur) : relance le service réseau du navigateur
+    /// (~1 s de réseau coupé dans le navigateur) pour copier ses cookies verrouillés. Seulement si
+    /// le navigateur n'est pas la fenêtre active, sans téléchargement en cours, et au plus une fois
+    /// toutes les 10 min ; sinon bandeau « Reconnecter » (nouvel essai chaque minute, voir `tick`).
+    fn auto_reconnect(&mut self, log_defer: bool) {
+        if crate::store::test_mode() {
+            return;
+        }
+        let why = if self.auto_reco_at.is_some_and(|t| t.elapsed() < Duration::from_secs(600)) {
+            Some("déjà fait il y a moins de 10 min")
+        } else if crate::cookies::browser_foreground() {
+            Some("le navigateur est la fenêtre active")
+        } else if crate::cookies::download_in_progress() {
+            Some("téléchargement en cours dans le navigateur")
+        } else {
+            None
+        };
+        if let Some(w) = why {
+            if log_defer {
+                crate::store::log(&format!("reconnexion automatique reportée : {w}"));
+            }
+            self.reconnect = true;
+            return;
+        }
+        let Some((name, p)) = crate::cookies::browser_profiles().into_iter().next() else {
+            self.reconnect = true;
+            return;
+        };
+        if self.import_cookies(p, true) {
+            self.auto_reco_at = Some(Instant::now());
+            crate::store::log(&format!("reconnexion automatique : service réseau de {name} relancé (~1 s), cookies recopiés"));
         }
     }
 
