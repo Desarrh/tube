@@ -106,7 +106,8 @@ pub fn prewarm(url: &str) {
             let mut w = warm().lock().unwrap();
             w.retain(|x| x.2.elapsed().as_secs() < 120);
             w.push((url, r, std::time::Instant::now()));
-            while w.len() > 6 {
+            // préparées d'avance (haut de page, survol) : une dizaine de vidéos, vidéo + son
+            while w.len() > 20 {
                 w.remove(0);
             }
         }

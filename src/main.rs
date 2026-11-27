@@ -440,7 +440,7 @@ impl Runner {
                     let n: usize = arg.parse().unwrap_or(0);
                     let items = app.view.feed_key().and_then(|k| app.feeds.get(&k)).filter(|f| !f.items.is_empty()).or_else(|| app.feeds.get("FEwhat_to_watch")).map(|f| f.items.clone()).unwrap_or_default();
                     if let Some(it) = items.iter().filter(|i| i.kind == api::Kind::Video && !i.live).nth(n).cloned() {
-                        app.extract(&it.id);
+                        app.extract_prio(&it.id, 1); // comme un survol réel
                     }
                 }
                 "toggle" => app.toggle(),

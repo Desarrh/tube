@@ -243,6 +243,14 @@ pub struct App {
     pub login: Login,
     pub login_msg: Option<String>,
     pub reimported: Option<Instant>,
+    /// Import lancé en arrière-plan (rafraîchissement) : en cas d'échec, rien à l'écran
+    quiet_import: bool,
+    /// Le navigateur garde son fichier de cookies verrouillé (Opera lancé sans le drapeau)
+    browser_locked: bool,
+    /// Dernière vérification des cookies du navigateur (rafraîchissement toutes les 5 min)
+    cookie_check: Instant,
+    /// Pages chargées pendant que YouTube nous voyait déconnecté : rechargées après reconnexion
+    anon_feeds: Vec<String>,
     /// session expirée et copie silencieuse impossible : bandeau « Reconnecter »
     pub reconnect: bool,
     pub toast: Option<(String, Instant)>,
@@ -543,6 +551,10 @@ impl App {
             login: if logged { Login::Ok } else { Login::Need },
             login_msg: None,
             reimported: None,
+            quiet_import: false,
+            browser_locked: false,
+            cookie_check: Instant::now(),
+            anon_feeds: Vec::new(),
             reconnect: false,
             toast: None,
             mode: Mode::Normal,
@@ -610,15 +622,20 @@ impl App {
             app.after_setup();
         }
         // (jamais en test : l'import relance le service réseau du navigateur de l'utilisateur)
-        if app.login == Login::Ok && app.setup == Setup::Done && cookies_age() > 30 * 60 && !crate::store::test_mode() {
+        let newer = crate::cookies::browser_profiles().into_iter().next().is_some_and(|(_, p)| crate::cookies::browser_newer(&p, &crate::store::cookies_path()));
+        if app.login == Login::Ok && app.setup == Setup::Done && (newer || cookies_age() > 30 * 60) && !crate::store::test_mode() {
             // le navigateur fait tourner les jetons de session : on repart de sa copie fraîche
             // copie silencieuse (aucun arrêt) ; si le fichier est verrouillé : bandeau « Reconnecter »
             if let Some((_, p)) = crate::cookies::browser_profiles().into_iter().next() {
                 app.reimported = Some(Instant::now());
-                app.import_cookies(p, false);
+                app.quiet_import = app.import_cookies(p, false);
                 app.login = Login::Ok;
+                app.opera_flag_quiet();
                 return app;
             }
+        }
+        if !crate::store::test_mode() {
+            app.opera_flag_quiet();
         }
         if app.login != Login::Need {
             app.load_feed(&View::Home, false);
@@ -655,6 +672,16 @@ impl App {
 
     /// Ajoute (ou remet après une mise à jour d'Opera) le drapeau qui laisse ses cookies lisibles.
     /// Sauvegardes à côté du projet en développement, sinon dans le dossier de Tube.
+    /// Remet le drapeau d'Opera sans rien afficher (Opera réécrit sa clé Run et ses raccourcis à
+    /// ses mises à jour). Rien n'est modifié s'il est déjà là ; sauvegardes comme `opera_flag`.
+    pub fn opera_flag_quiet(&mut self) {
+        let dev = std::env::current_exe().ok().and_then(|e| e.parent()?.parent().map(|p| p.to_path_buf())).filter(|p| p.join("Cargo.toml").exists());
+        let backup = dev.unwrap_or_else(crate::store::real_dir).join("sauvegarde-raccourcis-opera");
+        std::thread::spawn(move || {
+            let _ = crate::opera::apply(&backup);
+        });
+    }
+
     pub fn opera_flag(&mut self) {
         let dev = std::env::current_exe().ok().and_then(|e| e.parent()?.parent().map(|p| p.to_path_buf())).filter(|p| p.join("Cargo.toml").exists());
         let backup = dev.unwrap_or_else(crate::store::real_dir).join("sauvegarde-raccourcis-opera");
@@ -682,13 +709,14 @@ impl App {
     // ---------- Connexion ----------
     /// Import des cookies. `allow_kill` : seulement sur action de l'utilisateur (bouton) ; sinon
     /// copie silencieuse, possible uniquement si le fichier du navigateur n'est pas verrouillé.
-    pub fn import_cookies(&mut self, profile: std::path::PathBuf, allow_kill: bool) {
+    /// Renvoie faux si un import est déjà en cours (rien n'est lancé).
+    pub fn import_cookies(&mut self, profile: std::path::PathBuf, allow_kill: bool) -> bool {
         use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
         static BUSY: AtomicBool = AtomicBool::new(false);
         static N: AtomicU32 = AtomicU32::new(0);
         // un seul import à la fois (bouton cliqué deux fois, réimport auto en même temps…)
         if BUSY.swap(true, Ordering::SeqCst) {
-            return;
+            return false;
         }
         crate::store::log(&format!("import des cookies depuis {}{}", profile.display(), if allow_kill { "" } else { " (sans rien arrêter)" }));
         if self.login != Login::Ok {
@@ -714,6 +742,7 @@ impl App {
             let _ = tx.send(Msg::Cookies(r));
             ctx.request_repaint();
         });
+        true
     }
 
     // ---------- Flux ----------
@@ -1045,7 +1074,8 @@ impl App {
             return;
         }
         if let Some(v) = self.back.pop() {
-            self.view = v;
+            self.view = v.clone();
+            self.ensure_feed(&v);
         }
     }
 
@@ -1903,6 +1933,16 @@ impl App {
     // ---------- Boucle ----------
     /// Logique périodique (messages des fils, lecteur, SponsorBlock, sauvegardes). Renvoie le délai souhaité avant le prochain passage.
     pub fn tick(&mut self) -> Option<Duration> {
+        // toutes les 5 min : si le navigateur a fait tourner ses jetons, on reprend sa copie fraîche
+        // (copie directe, rien n'est arrêté ; fichier verrouillé = on le note, sans rien afficher)
+        if self.cookie_check.elapsed() > Duration::from_secs(300) && self.login == Login::Ok && !crate::store::test_mode() {
+            self.cookie_check = Instant::now();
+            if let Some((_, p)) = crate::cookies::browser_profiles().into_iter().next() {
+                if crate::cookies::browser_newer(&p, &crate::store::cookies_path()) {
+                    self.quiet_import = self.import_cookies(p, false);
+                }
+            }
+        }
         if let Some(rx) = &self.hk_rx {
             if let Ok(f) = rx.try_recv() {
                 crate::store::log(&format!("raccourcis indisponibles : {f:?}"));
@@ -2183,6 +2223,9 @@ impl App {
                 match r {
                     Ok(mut p) => {
                         if p.logged_in == Some(false) && self.login == Login::Ok && !key.starts_with("search:") {
+                            if !self.anon_feeds.contains(&key) {
+                                self.anon_feeds.push(key.clone());
+                            }
                             self.session_lost();
                         }
                         if hide {
@@ -2225,6 +2268,15 @@ impl App {
                         crate::store::add_extract(id.clone(), v.clone());
                         if playing_this {
                             self.start(v);
+                        } else if v["is_live"].as_bool() != Some(true) {
+                            // préparée d'avance (survol, haut de page) : connexions ouvertes et premiers
+                            // blocs vidéo et son téléchargés, le clic démarre sans attendre le réseau
+                            // même choix que `start` (plafond, puis débit mesuré) : les mêmes adresses
+                            let cap = self.s.quality.cap();
+                            let cap = crate::http::speed().and_then(|sp| fit_cap(&v, cap, None, sp, false)).map(|c| c.min(cap)).unwrap_or(cap);
+                            let (fv, fa, _, _) = pick(&v, cap, None);
+                            crate::http::prewarm(fv.as_ref().map(|f| f.url.as_str()).unwrap_or(""));
+                            crate::http::prewarm(fa.as_ref().map(|f| f.url.as_str()).unwrap_or(""));
                         }
                     }
                     // worker relancé pendant l'extraction (mise à jour, nouveaux cookies) : on recommence
@@ -2267,17 +2319,39 @@ impl App {
                     crate::store::log(&format!("import : {note}"));
                     let jar = Jar::load(&crate::store::cookies_path());
                     let ok = jar.logged_in();
+                    let same = {
+                        let key = |j: &Jar| {
+                            let mut v: Vec<(String, String)> = j.list.iter().map(|c| (c.name.clone(), c.value.clone())).collect();
+                            v.sort();
+                            v
+                        };
+                        key(&self.api.jar.lock().unwrap()) == key(&jar)
+                    };
                     *self.api.jar.lock().unwrap() = jar;
                     self.reconnect = false;
-                    // nouveaux cookies pris sans tuer le worker (les extractions en cours continuent)
-                    let _ = self.worker.send(serde_json::json!({"cmd": "reload"}));
+                    // nouveaux cookies pris sans tuer le worker (les extractions en cours continuent) ;
+                    // inchangés : rien à recharger (le worker garde ses caches, ~1 s par extraction)
+                    if !same {
+                        let _ = self.worker.send(serde_json::json!({"cmd": "reload"}));
+                    }
+                    let quiet = std::mem::take(&mut self.quiet_import);
+                    self.browser_locked = false;
                     if ok {
+                        let was = self.login;
                         self.login = Login::Ok;
-                        self.toast(format!("Connecté · {note}"));
-                        self.feeds.clear();
-                        self.cache.clear();
+                        // seulement les pages vues déconnecté (ou rien encore chargé) : les autres
+                        // pages, leur position et les extractions prêtes sont gardées
+                        let anon = std::mem::take(&mut self.anon_feeds);
+                        for k in &anon {
+                            self.feeds.remove(k);
+                        }
                         let v = if self.view.feed_key().is_some() { self.view.clone() } else { View::Home };
-                        self.load_feed(&v, false);
+                        if v.feed_key().is_some_and(|k| !self.feeds.contains_key(&k)) {
+                            self.load_feed(&v, false);
+                        }
+                        if was != Login::Ok || !anon.is_empty() || !quiet {
+                            self.toast(format!("Connecté · {note}"));
+                        }
                     } else {
                         self.login = Login::Need;
                         self.login_msg = Some("Aucune session YouTube trouvée dans ce navigateur : connecte-toi à youtube.com dedans, puis réessaie.".into());
@@ -2285,16 +2359,24 @@ impl App {
                 }
                 Err(e) => {
                     crate::store::log(&format!("import : {e}"));
+                    let quiet = std::mem::take(&mut self.quiet_import);
                     if e == crate::cookies::LOCKED {
-                        self.reconnect = true;
+                        self.browser_locked = true;
+                        // en arrière-plan : la session marche peut-être encore ; le bandeau ne
+                        // s'affiche que si YouTube nous voit déconnecté (session_lost)
+                        if !quiet || !self.anon_feeds.is_empty() {
+                            self.reconnect = true;
+                        }
                     }
                     let had = self.api.jar.lock().unwrap().logged_in();
-                    self.login = if had { Login::Ok } else { Login::Need };
                     if had && self.feeds.is_empty() {
                         self.load_feed(&View::Home, false);
                     }
-                    self.login_msg = Some(e.clone());
-                    self.toast(format!("Connexion impossible : {e}"));
+                    if !quiet {
+                        self.login = if had { Login::Ok } else { Login::Need };
+                        self.login_msg = Some(e.clone());
+                        self.toast(format!("Connexion impossible : {e}"));
+                    }
                 }
             },
             Msg::SetupStep(s) => self.setup = Setup::Running(s),
@@ -2355,8 +2437,8 @@ impl App {
         if crate::store::test_mode() {
             return;
         }
-        if self.reimported.is_some_and(|t| t.elapsed() < Duration::from_secs(600)) {
-            self.toast("Session YouTube expirée : Réglages › Reconnecter");
+        if self.browser_locked || self.reimported.is_some_and(|t| t.elapsed() < Duration::from_secs(600)) {
+            self.reconnect = true;
             return;
         }
         self.reimported = Some(Instant::now());

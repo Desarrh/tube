@@ -18,7 +18,8 @@ pub fn real_dir() -> PathBuf {
 
 pub fn dir() -> PathBuf {
     if test_mode() {
-        let d = std::env::temp_dir().join("tube-test");
+        // TUBE_TEST_DIR : dossier propre à un banc (deux bancs en parallèle ne se mélangent pas)
+        let d = std::env::var_os("TUBE_TEST_DIR").map(PathBuf::from).unwrap_or_else(|| std::env::temp_dir().join("tube-test"));
         // une fois par lancement : copie des cookies youtube.com seulement (jamais réécrits chez
         // l'utilisateur), effacée à la sortie (`clean_test`)
         static COPY: std::sync::Once = std::sync::Once::new();

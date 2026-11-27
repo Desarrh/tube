@@ -160,8 +160,9 @@ def human(msg):
 
 
 out_lock = threading.Lock()
-# Extractions UNE à la fois : plusieurs en parallèle donnent des adresses bridées (~100 Ko/s).
-# File à priorité : 0 = clic, 1 = survol, 2 = préchargement ; résultats récents réutilisés.
+# Extractions de fond UNE à la fois : plusieurs en parallèle donnent des adresses bridées (~100 Ko/s).
+# File à priorité : 1 = survol, 2 = préchargement ; un clic (0) passe tout de suite, dans son
+# propre fil ; résultats récents réutilisés.
 jobs = queue.PriorityQueue()
 order = itertools.count()
 recent = {}
@@ -175,21 +176,48 @@ def reply(rid, out, t):
         print(line, flush=True)
 
 
+running = {}  # adresse -> Event : extraction en cours (une seule par vidéo, même à deux fils)
+running_lock = threading.Lock()
+
+
+def extract_once(url):
+    """Résultat récent (< 120 s), sinon celui d'une extraction déjà en cours pour cette vidéo
+    (un clic pendant le survol n'en relance pas une deuxième), sinon une nouvelle extraction."""
+    with running_lock:
+        hit = recent.get(url)
+        if hit and time.time() - hit[0] < 120:
+            return hit[1]
+        ev = running.get(url)
+        mine = ev is None
+        if mine:
+            ev = running[url] = threading.Event()
+    if not mine:
+        ev.wait(90)
+        hit = recent.get(url)
+        if hit:
+            return hit[1]
+        return extract(url)  # l'autre a échoué : on réessaie nous-mêmes
+    try:
+        res = extract(url)
+        with running_lock:
+            now = time.time()
+            for k in [k for k, v in recent.items() if now - v[0] >= 120]:
+                del recent[k]
+            recent[url] = (now, res)
+        return res
+    finally:
+        with running_lock:
+            running.pop(url, None)
+        ev.set()
+
+
 def handle(req):
     t = time.time()
     rid = req.get("id", 0)
     try:
         cmd = req.get("cmd")
         if cmd == "extract":
-            hit = recent.get(req["url"])
-            if hit and time.time() - hit[0] < 120:
-                res = hit[1]
-            else:
-                res = extract(req["url"])
-                now = time.time()
-                for k in [k for k, v in recent.items() if now - v[0] >= 120]:
-                    del recent[k]
-                recent[req["url"]] = (now, res)
+            res = extract_once(req["url"])
         elif cmd == "import":
             res = import_cookies(req["src"], req["out"], req.get("browser", "opera"))
         elif cmd == "reload":
@@ -217,7 +245,11 @@ for line in sys.stdin:
         req = json.loads(line)
     except Exception:
         continue
-    if req.get("cmd") == "extract":
+    if req.get("cmd") == "extract" and req.get("prio", 0) > 0:
         jobs.put((req.get("prio", 0), next(order), req))
+    elif req.get("cmd") == "extract":
+        # clic : tout de suite, dans son propre fil, sans attendre l'extraction de fond en cours
+        # (au plus deux en parallèle : le clic et un préchargement)
+        threading.Thread(target=handle, args=(req,), daemon=True).start()
     else:
         threading.Thread(target=handle, args=(req,), daemon=True).start()

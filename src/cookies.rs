@@ -174,6 +174,16 @@ pub fn browser_profiles() -> Vec<(String, PathBuf)> {
     v
 }
 
+/// Vrai si le fichier de cookies du navigateur a changé après notre copie (rotation des jetons).
+pub fn browser_newer(profile: &Path, ours: &Path) -> bool {
+    let mt = |p: &Path| std::fs::metadata(p).and_then(|m| m.modified()).ok();
+    match (cookie_file(profile).and_then(|f| mt(&f)), mt(ours)) {
+        (Some(b), Some(o)) => b > o,
+        (Some(_), None) => true,
+        _ => false,
+    }
+}
+
 fn cookie_file(profile: &Path) -> Option<PathBuf> {
     [profile.join("Default").join("Network").join("Cookies"), profile.join("Network").join("Cookies"), profile.join("Cookies")]
         .into_iter()

@@ -9,7 +9,8 @@
 param([Parameter(Mandatory)][string]$Exe, [string]$Nom = 'essai', [int]$Largeur = 2560, [int]$Hauteur = 1392,
       [string]$Video = 'dQw4w9WgXcQ', [string]$Recherche = 'musique 80s')
 $ErrorActionPreference = 'Stop'
-$T = Join-Path $env:TEMP 'tube-test'
+$T = Join-Path $env:TEMP "tube-banc-$Nom"
+$env:TUBE_TEST_DIR = $T
 New-Item -ItemType Directory -Force $T | Out-Null
 $copie = Join-Path $env:TEMP "TubeBanc-$Nom.exe"
 Copy-Item $Exe $copie -Force
@@ -34,7 +35,7 @@ function Lancer($argument, $script, $quit) {
 "===== $Nom ($Largeur x $Hauteur) ====="
 "--- 1. demarrage a froid (lancement avec un lien)"
 Lancer "https://www.youtube.com/watch?v=$Video" '' 20 | Select-String 'd.marrage$|premi.re image|apr.s le clic|lecture d' | ForEach-Object { $_.Line }
-"--- 2. recherche, clic sur le 1er resultat (precharge), retour, defilement, clic lointain"
-$sc = '10:play:0;22:back;30:scroll:25;42:scroll:0;44:play:30'
-Lancer $Recherche $sc 62 | Select-String 'flux search|apr.s le clic|lecture d|page |interface :|script' | ForEach-Object { $_.Line }
+"--- 2. recherche : clic 1er resultat, retour, survol 1 s puis clic, retour, defilement, clic lointain"
+$sc = '10:play:0;20:back;24:hover:6;25:play:6;34:back;36:scroll:25;46:scroll:0;48:play:30'
+Lancer $Recherche $sc 66 | Select-String 'flux search|apr.s le clic|lecture d|page |interface :|script' | ForEach-Object { $_.Line }
 Remove-Item $copie -ErrorAction SilentlyContinue
