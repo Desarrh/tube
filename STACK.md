@@ -119,7 +119,7 @@ cargo build --release
 | `opera.rs` | Drapeau `--disable-features=LockProfileCookieDatabase` sur les raccourcis d'Opera GX et sa clé Run (voir Authentification) |
 | `worker.rs` / `worker.py` | Processus Python yt-dlp persistant, JSON ligne à ligne ; déchiffrement des cookies du navigateur ; installation du venv et de deno ; mise à jour |
 | `player.rs` | Enveloppe `IMFMediaEngine` : ouverture, saut approximatif, volume, vitesse, statistiques, événements |
-| `http.rs` | Flux googlevideo : blocs de 512 Ko ; 3 requêtes de préchargement par flux (`PARALLEL`), de 4 blocs chacune (`FETCH`), jusqu'à 48 blocs (24 Mo) d'avance (`AHEAD`) ; réessai des requêtes bridées ; mesure de débit ; flux préparés au survol ; un fil de lecture par flux |
+| `http.rs` | Flux googlevideo : blocs de 512 Ko ; 3 requêtes de préchargement par flux (`PARALLEL`), de 4 blocs chacune (`FETCH`), jusqu'à 48 blocs (24 Mo) d'avance (`AHEAD`) ; réessai des requêtes bridées ; mesure de débit ; flux préparés d'avance (connexion ouverte et premier bloc téléchargé dès qu'une vidéo survolée ou en haut de page est extraite ; 20 flux au plus, 2 min) ; un fil de lecture par flux |
 | `mp4.rs` | Index `mfra` synthétisé depuis le `sidx` (démarrage et sauts rapides des MP4 fragmentés) |
 | `live.rs` | Directs HLS : segments TS mis bout à bout, retour arrière par numéro de segment, IPv4 forcé |
 | `vidwin.rs` | Fenêtre enfant vidéo (transparente à la souris), découpes, capture de l'image, couleurs des bords |
@@ -142,7 +142,7 @@ cargo build --release
 - fil UI (winit) ;
 - tick logique toutes les 250 ms pendant la lecture ;
 - 6 fils de miniatures ;
-- dans le worker Python, un fil d'extraction avec file à priorité (0 = clic, 1 = survol, 2 = préchargement). Une extraction en cours n'est pas interrompue : un clic peut attendre la fin d'un préchargement ;
+- dans le worker Python, un fil d'extraction de fond avec file à priorité (1 = survol, 2 = préchargement) ; un clic (0) est extrait tout de suite dans son propre fil (au plus deux extractions en parallèle). Une vidéo déjà en cours d'extraction (survol) n'est pas extraite deux fois : le clic attend ce résultat ;
 - jusqu'à 3 fils de préchargement HTTP par flux, plus un fil de lecture pour Media Foundation ;
 - un fil HLS par direct ;
 - un fil de capture audio (audio seul, en lecture seulement) ;
@@ -154,8 +154,8 @@ Les messages vers l'UI passent par un canal `mpsc` (`Msg`), suivi d'un `request_
 **Authentification.**
 - Seuls les cookies **youtube.com** du navigateur sont copiés : ils portent toute la session YouTube. Ceux de google.com (accès au reste du compte) ne sont jamais gardés, et un ancien fichier qui en contenait est réécrit sans eux.
 - Copie dans `%LOCALAPPDATA%\Tube\cookies.txt`. yt-dlp déchiffre les cookies du profil (nom du navigateur passé à `extract_cookies_from_browser`).
-- **Le navigateur n'est jamais interrompu sans clic.** Les réimportations automatiques (copie de plus de 30 min au démarrage, session perdue : au plus une fois toutes les 10 min) ne font qu'une copie directe. Si le fichier est verrouillé, un bandeau propose « Reconnecter » ; ce clic arrête le seul *network service* du navigateur (Restart Manager), qui redémarre aussitôt (~1 s de réseau coupé).
-- **Voie préférée : le drapeau d'Opera.** `opera.rs` ajoute `--disable-features=LockProfileCookieDatabase` aux raccourcis d'Opera GX (barre des tâches, menu Démarrer, Bureau) et à sa valeur de lancement automatique (`HKCU\…\CurrentVersion\Run`). Le fichier de cookies n'est alors plus verrouillé. C'est idempotent, et chaque raccourci ou valeur est sauvegardé (`.lnk`, `.reg`) dans `sauvegarde-raccourcis-opera` avant modification. Effet au prochain démarrage d'Opera. Une mise à jour d'Opera peut recréer ses raccourcis : on relance alors le bouton « Réappliquer le réglage d'Opera » du bandeau, `Tube.exe --opera-drapeau` ou `scripts\opera-drapeau.ps1`.
+- **Le navigateur n'est jamais interrompu sans clic.** Les réimportations automatiques ne font qu'une copie directe : au démarrage et toutes les 5 min si les cookies du navigateur sont plus récents que la copie (il fait tourner ses jetons de session), et quand la session est perdue (au plus une fois toutes les 10 min). Un réimport ne vide ni les pages ni les extractions préparées : seules les pages vues déconnecté sont rechargées, et le worker n'est rechargé que si les cookies youtube.com ont changé. Si le fichier est verrouillé, un bandeau propose « Reconnecter » ; ce clic arrête le seul *network service* du navigateur (Restart Manager), qui redémarre aussitôt (~1 s de réseau coupé).
+- **Voie préférée : le drapeau d'Opera.** `opera.rs` ajoute `--disable-features=LockProfileCookieDatabase` aux raccourcis d'Opera GX (barre des tâches, menu Démarrer, Bureau) et à sa valeur de lancement automatique (`HKCU\…\CurrentVersion\Run`). Le fichier de cookies n'est alors plus verrouillé. C'est idempotent, et chaque raccourci ou valeur est sauvegardé (`.lnk`, `.reg`) dans `sauvegarde-raccourcis-opera` avant modification. Effet au prochain démarrage d'Opera. Opera réécrit sa clé Run et ses raccourcis à ses mises à jour : Tube remet donc le drapeau en silence à chaque lancement ; à la main : le bouton « Réappliquer le réglage d'Opera » du bandeau, `Tube.exe --opera-drapeau` ou `scripts\opera-drapeau.ps1`.
 - InnerTube utilise l'en-tête `SAPISIDHASH`, une signature dérivée du cookie SAPISID, comme le site web. yt-dlp n'utilise le compte que si la vidéo l'exige (âge, membres, privée).
 - Aucun mot de passe n'est demandé ni lu.
 
@@ -252,9 +252,10 @@ Les captures d'image vont dans `Images\Tube`. Les sauvegardes des raccourcis d'O
 - Le mode test isolé s'active avec `TUBE_TEST=1`, `TUBE_SCRIPT`, `TUBE_QUIT_AFTER`, `SOCLE_TEST=1` ou `--test-hors-ecran`. Il ne dérange jamais l'utilisateur :
   - fenêtre invisible (`socle::testmode::hide`), sans focus, muette, en priorité basse ;
   - ni raccourcis globaux, ni panneau média, ni import de cookies ;
-  - données à part (`%TEMP%\tube-test`, avec une copie des seuls cookies youtube.com, effacée à la sortie) et instance à part ;
+  - données à part (`%TEMP%\tube-test`, ou `TUBE_TEST_DIR`, avec une copie des seuls cookies youtube.com, effacée à la sortie) et instance à part ;
   - aucune entrée simulée.
 - Scénario scripté : `TUBE_SCRIPT="12:toggle;15:shot:C:\x.png"` (secondes depuis le lancement : commande : argument ; liste des commandes dans `main.rs`), `TUBE_QUIT_AFTER=30` (secondes).
+- Banc de mesure : `scripts\banc.ps1 -Exe <tube.exe> -Nom <nom> [-Largeur 5120]` (démarrage à froid, clics préparé / survolé / lointain, retour sur une page, défilement de la grille). Le journal (heure locale réelle) donne « vidéo X : lecture N ms après le clic », « page K : gardée en mémoire / complète en N ms », « interface : … ms en moyenne, pire … ms ».
 - Journaux détaillés : `TUBE_LOG_EVENTS`, `TUBE_LOG_READS`, `TUBE_LOG_PAINT` ; captures `TUBE_CAPTURE` / `TUBE_CAPTURE_AFTER` ; `TUBE_DUMP_URL` (adresse refusée dans `url403.txt`).
 
 ## 6. Fonctionnalités
