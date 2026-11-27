@@ -39,6 +39,8 @@ struct Gfx {
     _context: softbuffer::Context<Rc<Window>>,
     surface: softbuffer::Surface<Rc<Window>, Rc<Window>>,
     renderer: EguiSoftwareRender,
+    /// rendu sans le cache du moteur (pages de vignettes, voir `paint`)
+    direct: bool,
 }
 
 enum UserEvent {
@@ -170,8 +172,21 @@ impl Runner {
             return;
         }
         let Ok(mut buf) = gfx.surface.buffer_mut() else { return };
-        let bg = if app.mode == Mode::Normal { app.pal.bg } else { egui::Color32::BLACK };
-        buf.fill(((bg.r() as u32) << 16) | ((bg.g() as u32) << 8) | bg.b() as u32);
+        // Grilles de vignettes : rendu direct dans le tampon. Le cache du moteur (une image par
+        // primitive, reconnue à la position de ses sommets) est entièrement invalidé à chaque image
+        // de défilement et coûte alors 3 passes plein écran de plus ; sans lui, 3× plus rapide.
+        // Ailleurs (lecture : fond, dégradés, peu de changements par image) le cache reste gagnant.
+        let direct = app.mode == Mode::Normal && app.view.feed_key().is_some();
+        if direct != gfx.direct {
+            gfx.direct = direct;
+            let r = std::mem::replace(&mut gfx.renderer, EguiSoftwareRender::new(ColorFieldOrder::Bgra));
+            gfx.renderer = r.with_caching(!direct);
+        }
+        // en direct, les panneaux opaques d'egui couvrent toute la fenêtre : rien à effacer avant
+        if !direct {
+            let bg = if app.mode == Mode::Normal { app.pal.bg } else { egui::Color32::BLACK };
+            buf.fill(((bg.r() as u32) << 16) | ((bg.g() as u32) << 8) | bg.b() as u32);
+        }
         {
             let px: &mut [[u8; 4]] = bytemuck::cast_slice_mut(&mut buf[..]);
             let mut target = BufferMutRef::new(px, w.get() as usize, h.get() as usize);
@@ -652,7 +667,7 @@ impl ApplicationHandler<UserEvent> for Runner {
         }
         self.app = Some(app);
         window.request_redraw();
-        self.gfx = Some(Gfx { window, egui, _context: context, surface, renderer });
+        self.gfx = Some(Gfx { window, egui, _context: context, surface, renderer, direct: false });
     }
 
     fn window_event(&mut self, el: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
