@@ -839,7 +839,12 @@ impl App {
                 // texture plus grande d'un pixel (voir thumbs.rs) : on n'en montre que w × h
                 let sz = t.size_vec2();
                 let uv = Rect::from_min_max(pos2(0.0, 0.0), pos2((sz.x - 1.0) / sz.x, (sz.y - 1.0) / sz.y));
-                ui.painter().image(t.id(), r, uv, Color32::WHITE);
+                // + un triangle vide : le rendu logiciel ne reconnaît un rectangle (recopie directe)
+                // que si le maillage a plus de 6 indices ; sinon il ré-échantillonne chaque pixel
+                let mut mesh = egui::Mesh::with_texture(t.id());
+                mesh.add_rect_with_uv(r, uv, Color32::WHITE);
+                mesh.add_triangle(0, 0, 0);
+                ui.painter().add(mesh);
             }
             None => {
                 self.thumbs_missing += 1;
