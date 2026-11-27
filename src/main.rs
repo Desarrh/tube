@@ -61,6 +61,7 @@ struct Runner {
     open_arg: Option<String>,
     script_done: Vec<usize>,
     paints: (u32, f64),
+    paint_max: f64,
     paints_at: Instant,
 }
 
@@ -193,9 +194,11 @@ impl Runner {
         }
         self.paints.0 += 1;
         self.paints.1 += t_paint.elapsed().as_secs_f64();
+        self.paint_max = self.paint_max.max(t_paint.elapsed().as_secs_f64());
         if self.paints_at.elapsed().as_secs() >= 10 && std::env::var_os("TUBE_LOG_PAINT").is_some() {
-            store::log(&format!("interface : {} images en 10 s, {:.1} ms en moyenne", self.paints.0, self.paints.1 * 1000.0 / self.paints.0.max(1) as f64));
+            store::log(&format!("interface : {} images en 10 s, {:.1} ms en moyenne, pire {:.1} ms", self.paints.0, self.paints.1 * 1000.0 / self.paints.0.max(1) as f64, self.paint_max * 1000.0));
             self.paints = (0, 0.0);
+            self.paint_max = 0.0;
             self.paints_at = Instant::now();
         }
         self.place_video();
@@ -388,7 +391,7 @@ impl Runner {
                 "seek" => app.seek_to(arg.parse().unwrap_or(0.0)),
                 "play" => {
                     let n: usize = arg.parse().unwrap_or(0);
-                    let items = app.feeds.get("FEwhat_to_watch").map(|f| f.items.clone()).unwrap_or_default();
+                    let items = app.view.feed_key().and_then(|k| app.feeds.get(&k)).filter(|f| !f.items.is_empty()).or_else(|| app.feeds.get("FEwhat_to_watch")).map(|f| f.items.clone()).unwrap_or_default();
                     if let Some(it) = items.iter().filter(|i| i.kind == api::Kind::Video && !i.live).nth(n).cloned() {
                         app.s.positions.remove(&it.id);
                         app.open(&it, None);
@@ -396,7 +399,7 @@ impl Runner {
                 }
                 "newtab" => {
                     let n: usize = arg.parse().unwrap_or(0);
-                    let items = app.feeds.get("FEwhat_to_watch").map(|f| f.items.clone()).unwrap_or_default();
+                    let items = app.view.feed_key().and_then(|k| app.feeds.get(&k)).filter(|f| !f.items.is_empty()).or_else(|| app.feeds.get("FEwhat_to_watch")).map(|f| f.items.clone()).unwrap_or_default();
                     if let Some(it) = items.iter().filter(|i| i.kind == api::Kind::Video && !i.live).nth(n).cloned() {
                         app.open_in_tab(&it);
                     }
@@ -435,12 +438,13 @@ impl Runner {
                 "cardw" => app.s.card_w = arg.parse().unwrap_or(300.0),
                 "hover" => {
                     let n: usize = arg.parse().unwrap_or(0);
-                    let items = app.feeds.get("FEwhat_to_watch").map(|f| f.items.clone()).unwrap_or_default();
+                    let items = app.view.feed_key().and_then(|k| app.feeds.get(&k)).filter(|f| !f.items.is_empty()).or_else(|| app.feeds.get("FEwhat_to_watch")).map(|f| f.items.clone()).unwrap_or_default();
                     if let Some(it) = items.iter().filter(|i| i.kind == api::Kind::Video && !i.live).nth(n).cloned() {
                         app.extract(&it.id);
                     }
                 }
                 "toggle" => app.toggle(),
+                "back" => app.go_back(),
                 "view" => match arg {
                     "home" => app.go(app::View::Home),
                     "subs" => app.go(app::View::Subs),
@@ -866,6 +870,7 @@ fn main() {
         open_arg,
         script_done: Vec::new(),
         paints: (0, 0.0),
+        paint_max: 0.0,
         paints_at: Instant::now(),
     };
     let _ = event_loop.run_app(&mut runner);

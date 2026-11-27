@@ -137,6 +137,16 @@ fn to_px(r: Rect, ppp: f32) -> (i32, i32, i32, i32) {
 impl App {
     pub fn draw(&mut self, ui: &mut Ui) {
         self.draw_main(ui);
+        // mesure : page affichée → toutes ses miniatures visibles prêtes
+        if let Some((k, t)) = self.page_t.clone() {
+            let shown = self.view.feed_key().as_ref() == Some(&k) && self.feeds.get(&k).is_some_and(|f| !f.items.is_empty());
+            if shown && self.thumbs_missing == 0 {
+                crate::store::log(&format!("page {k} : complète en {} ms", t.elapsed().as_millis()));
+                self.page_t = None;
+            } else if t.elapsed() > Duration::from_secs(30) {
+                self.page_t = None;
+            }
+        }
         // palette de commandes Ctrl+K (socle), par-dessus tout
         let ctx = ui.ctx().clone();
         self.palette.handle_shortcut(&ctx);
@@ -832,6 +842,7 @@ impl App {
                 ui.painter().image(t.id(), r, uv, Color32::WHITE);
             }
             None => {
+                self.thumbs_missing += 1;
                 ui.painter().rect_filled(r, CornerRadius::ZERO, p.soft);
             }
         }
@@ -955,6 +966,7 @@ impl App {
 
     fn draw_feed(&mut self, ui: &mut Ui, v: &View) {
         let Some(key) = v.feed_key() else { return };
+        self.thumbs_missing = 0;
         if !self.feeds.contains_key(&key) {
             self.load_feed(v, false);
         }

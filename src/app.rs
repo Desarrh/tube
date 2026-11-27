@@ -144,6 +144,8 @@ pub struct Fmt {
 }
 
 pub struct Watch {
+    /// Mesure clic → première lecture faite (une fois par vidéo)
+    pub play_logged: bool,
     pub item: Item,
     pub info: Option<Value>,
     pub player: Option<Player>,
@@ -279,6 +281,10 @@ pub struct App {
     pub still_after: Instant,
     /// test : défilement automatique de la grille (points par image)
     pub dbg_scroll: (f32, f32),
+    /// Mesure : page affichée (clé, depuis) jusqu'à ce que toutes ses miniatures visibles soient prêtes
+    pub page_t: Option<(String, Instant)>,
+    /// Miniatures visibles pas encore prêtes, comptées pendant l'image
+    pub thumbs_missing: u32,
     pub preview: Option<Preview>,
     /// mode cinéma : couleurs lissées des deux bords de l'image (bandes), instant du dernier relevé
     pub ambient: Option<(Vec<[f32; 3]>, Vec<[f32; 3]>, Instant)>,
@@ -568,6 +574,8 @@ impl App {
             audio_bg_asked: String::new(),
             still_after: Instant::now(),
             dbg_scroll: (0.0, 0.0),
+            page_t: None,
+            thumbs_missing: 0,
             preview: None,
             ambient: None,
             viz: None,
@@ -729,6 +737,11 @@ impl App {
     }
 
     fn ensure_feed(&mut self, v: &View) {
+        if let Some(k) = v.feed_key() {
+            let kept = self.feeds.get(&k).is_some_and(|f| !f.items.is_empty());
+            crate::store::log(&format!("page {k} : {}", if kept { "gardée en mémoire" } else { "à charger" }));
+            self.page_t = Some((k, Instant::now()));
+        }
         // une page déjà chargée est gardée telle quelle (et à la même position de défilement) ;
         // seulement rafraîchie si elle date de plus de 30 min (ou à la demande : F5, logo)
         let stale = v.feed_key().and_then(|k| self.feeds.get(&k)).is_none_or(|f| f.error.is_some() || f.loaded.is_some_and(|t| t.elapsed() > Duration::from_secs(1800)));
@@ -1190,6 +1203,7 @@ impl App {
             forced_lang: None,
             auto_cap: None,
             started_at: Instant::now(),
+            play_logged: false,
             frames_at: (0, Instant::now()),
             seek_at: None,
             next_prepared: None,
@@ -1922,6 +1936,10 @@ impl App {
         if let Some(w) = self.watch.as_mut() {
             if let Some(p) = w.player.as_mut() {
                 p.poll();
+                if std::mem::take(&mut p.just_started) && !w.play_logged {
+                    w.play_logged = true;
+                    crate::store::log(&format!("vidéo {} : lecture {} ms après le clic ({}x{})", w.item.id, w.opened_at.elapsed().as_millis(), p.size.0, p.size.1));
+                }
                 if let Some(e) = &p.error {
                     // un direct peut être relancé autant de fois que nécessaire (adresses refusées en cours de route)
                     let live = w.info.as_ref().is_some_and(|i| i["is_live"].as_bool() == Some(true));

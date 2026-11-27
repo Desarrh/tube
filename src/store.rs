@@ -280,7 +280,7 @@ pub fn log(msg: &str) {
             // BOM UTF-8 : le journal s'ouvre avec les bons accents dans les éditeurs Windows
             let _ = f.write_all("\u{feff}".as_bytes());
         }
-        let ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() % 100_000).unwrap_or(0);
-        let _ = writeln!(f, "[{:>6}.{:03}] {msg}", ms / 1000, ms % 1000);
+        let t = unsafe { windows::Win32::System::SystemInformation::GetLocalTime() };
+        let _ = writeln!(f, "[{:02}/{:02} {:02}:{:02}:{:02}.{:03}] {msg}", t.wDay, t.wMonth, t.wHour, t.wMinute, t.wSecond, t.wMilliseconds);
     }
 }

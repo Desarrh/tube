@@ -143,6 +143,8 @@ pub struct Player {
     want_play: bool,
     play_after_seek: bool,
     logged_play: bool,
+    /// Vrai une fois, au premier « PLAYING » (mesure clic → lecture, lu par app.rs)
+    pub just_started: bool,
 }
 
 impl Player {
@@ -187,6 +189,7 @@ impl Player {
                 want_play: play,
                 play_after_seek: play && start > 1.0,
                 logged_play: false,
+                just_started: false,
             })
         }
     }
@@ -236,6 +239,7 @@ impl Player {
                     if e == MF_MEDIA_ENGINE_EVENT_PLAYING.0 {
                         if !self.logged_play {
                             self.logged_play = true;
+                            self.just_started = true;
                             crate::store::log("lecture démarrée");
                         }
                         self.ended = false;
